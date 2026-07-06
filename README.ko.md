@@ -4,7 +4,7 @@
 
 토큰이 얼마나 남았지? AI 구독 쿼터를 터미널 대시보드 하나로 — Claude Code(Anthropic), Codex(OpenAI), Gemini CLI, GitHub Copilot, Grok CLI, Antigravity, OpenCode, z.ai. 소진 속도 예측, 임계값 알림, 자격 증명 자동 탐지 + OAuth 토큰 자동 갱신, 그리고 Claude Code의 로컬 모델별 토큰/비용 집계(Fable 포함)까지 제공합니다.
 
-![tokensleft 대시보드 — 감지된 모든 프로바이더의 쿼터 바, 페이스 예측, 모델별 비용 표](docs/screenshot.png)
+![tokensleft 대시보드 — 감지된 모든 프로바이더의 쿼터 바, 페이스 예측, 모델별 비용 표](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot.png)
 
 ## 빠른 시작
 

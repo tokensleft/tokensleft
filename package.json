@@ -1,6 +1,6 @@
 {
   "name": "tokensleft",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Terminal dashboard for AI subscription quotas — Claude Code, Codex, Gemini CLI, Copilot, Grok, Antigravity, OpenCode, z.ai — with burn-rate forecasts and threshold alerts.",
   "license": "MIT",
   "author": "tokensleft <300059467+tokensleft@users.noreply.github.com>",
@@ -41,5 +41,13 @@
   },
   "engines": {
     "node": ">=22.13.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tokensleft/tokensleft.git"
+  },
+  "homepage": "https://github.com/tokensleft/tokensleft#readme",
+  "bugs": {
+    "url": "https://github.com/tokensleft/tokensleft/issues"
   }
 }

@@ -4,7 +4,7 @@
 
 我的 token 还剩多少?一个终端仪表盘看遍所有 AI 订阅配额 — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai — 内置燃烧速率预测、阈值警报、自动凭证发现 + OAuth token 自动刷新,以及 Claude Code 的本地逐模型 token/成本统计(含 Fable)。
 
-![tokensleft 仪表盘 — 每个检测到的服务的配额进度条、速度预测与逐模型成本表](docs/screenshot.png)
+![tokensleft 仪表盘 — 每个检测到的服务的配额进度条、速度预测与逐模型成本表](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot.png)
 
 ## 快速开始
 
