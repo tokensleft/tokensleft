@@ -4,7 +4,7 @@
 
 How many tokens do I have left? One terminal dashboard for AI subscription quota — Claude Code (Anthropic), Codex (OpenAI), Gemini CLI, GitHub Copilot, Grok CLI, Antigravity, OpenCode, and z.ai — with burn-rate forecasts, threshold alerts, automatic credential discovery + OAuth token refresh, and local per-model token/cost accounting for Claude Code (including Fable).
 
-![tokensleft dashboard — quota bars, pace forecasts, and per-model cost table for every detected provider](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot.png)
+![tokensleft dashboard — quota bars, pace forecasts, and per-model cost table for every detected provider](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
 
 ## Quick start
 

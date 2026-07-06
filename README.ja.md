@@ -4,7 +4,7 @@
 
 トークンはあとどれくらい残ってる?AI サブスクリプションのクォータをターミナル 1 画面で — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai。バーンレート予測、しきい値アラート、認証情報の自動検出 + OAuth トークン自動リフレッシュ、さらに Claude Code のローカル・モデル別トークン/コスト集計(Fable 含む)を搭載。
 
-![tokensleft ダッシュボード — 検出された各プロバイダのクォータバー、ペース予測、モデル別コスト表](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot.png)
+![tokensleft ダッシュボード — 検出された各プロバイダのクォータバー、ペース予測、モデル別コスト表](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
 
 ## クイックスタート
 
