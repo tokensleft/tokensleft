@@ -2,7 +2,7 @@
 
 [English](README.md) · **繁體中文** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md)
 
-我的 token 還剩多少?一個終端機儀表板看遍所有 AI 訂閱配額 — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai — 內建燃燒速率預測、閾值警報、自動憑證探索 + OAuth token 自動更新,以及 Claude Code 的本地逐模型 token/成本統計(含 Fable)。
+我的 token 還剩多少?一個終端機儀表板看遍所有 AI 訂閱配額 — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai — 內建燃燒速率預測、閾值警報、自動憑證探索 + OAuth token 自動更新,以及 Claude Code(含 Fable)、Codex、Gemini CLI 與 OpenCode 的本地逐模型 token/成本統計。
 
 ![tokensleft 儀表板 — 每個偵測到的服務的配額進度條、速度預測與逐模型成本表](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
 
@@ -18,12 +18,12 @@ npx tokensleft
 |---|---|
 | `npx tokensleft` | 所有偵測到的服務,一個 TUI 全包 |
 | `npx tokensleft claude` | Claude Code 速率限制(Session / Weekly / 逐模型如 Fable)+ 本地 token 與成本表 |
-| `npx tokensleft codex` | Codex(ChatGPT 方案)session/weekly/模型限制、reviews、credits |
-| `npx tokensleft gemini` | Gemini CLI Pro/Flash 每日配額 |
+| `npx tokensleft codex` | Codex(ChatGPT 方案)session/weekly/模型限制、reviews、credits + 本地 token 與成本表 |
+| `npx tokensleft gemini` | Gemini CLI Pro/Flash 每日配額 + 本地 token 與成本表 |
 | `npx tokensleft copilot` | GitHub Copilot premium/chat 配額(免費方案:chat/completions) |
 | `npx tokensleft grok` | Grok CLI 每月 credits + 按量付費上限 |
 | `npx tokensleft antigravity` | Antigravity 逐模型池配額(Gemini Pro / Flash / Claude) |
-| `npx tokensleft opencode` | OpenCode Go 方案花費 vs session/週/月美元上限 |
+| `npx tokensleft opencode` | OpenCode Go 方案花費 vs session/週/月美元上限 + 本地逐模型表 |
 | `npx tokensleft zai` | z.ai 帳號配額 |
 | `npx tokensleft claude codex` | 任意組合多個服務 |
 | `npx tokensleft --demo` | 隨機產生的擬真資料 — 拿來截圖 |
@@ -57,7 +57,7 @@ npx tokensleft
 
 ## TUI 快捷鍵
 
-`r` 全部重新整理 · `1`-`9` 重新整理單一服務 · `d` 切換詳細模式 · `q`/`Esc` 離開 · 方向鍵/滑鼠捲動。
+`r` 全部重新整理 · `1`-`9` 重新整理單一服務 · `d` 詳細檢視(加入本地逐模型用量表) · `q`/`Esc` 離開 · 方向鍵/PgUp/PgDn/滑鼠捲動。
 
 ## 數字怎麼算
 
@@ -68,12 +68,25 @@ npx tokensleft
 - 當線性速度在重置**之前**就穿過 100%,會顯示 `⚠ dry in X` 與穿越時間。
 - 跨越 80% / 90% 會響終端機鈴聲,並在標題列顯示紅色警報。
 
+## 本地用量表(`d` 鍵)
+
+配額進度條顯示的是百分比;本地用量表告訴你這些百分比是由什麼組成的。按 `d`(詳細檢視 — 也是 `--once` 印出的內容)可看到近 7 天的逐模型明細,彙整自各 CLI 自己留在磁碟上的紀錄 — 增量掃描,任何資料都不會離開你的機器:
+
+| 服務 | 來源 | 備註 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/**/*.jsonl` 對話紀錄 | 拆分 input/output/cache-read/cache-write,依訊息 id 去重 |
+| Codex | `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl` | 用量由累計的 session 總量差分而得,重複事件與分岔/續接的 session 不會重複計算 |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*` session 檢查點(.json 與 .jsonl) | thought token 計為 output,工具提示計為 input |
+| OpenCode | `opencode.db`(SQLite,唯讀) | 按 provider/模型;`$` 是 OpenCode 自己逐訊息記錄的成本 |
+
+對 Claude Code、Codex 與 Gemini,`$` 欄位是按公開 API 價格估算(快取讀/寫按其折扣價計)— 訂閱用量是預付的,這個數字僅供比例參考,不代表帳單。沒有公開定價的模型會顯示 `?`。
+
 ## Claude Code 專屬細節
 
 - **自動(系統)金鑰**:**每次重新整理**都從 `~/.claude/.credentials.json`(或 `CLAUDE_CONFIG_DIR`)重讀;過期 token 會用儲存的 refresh token 換新並寫回(minified JSON、原子寫入),Claude Code 能繼續使用輪換後的 token。
 - **手動金鑰**:`.env` 裡的 `CLAUDE_TOKEN_1..N`(+ `CLAUDE_NAME_1..N`)或 `CLAUDE_CODE_OAUTH_TOKEN` — 給額外帳號或沒裝 Claude Code 的機器用。與系統 token 重複的會跳過。
 - **速率限制**來自 Anthropic 的 OAuth usage 端點:5 小時 session、每週全模型、逐模型每週範圍(如 Fable),啟用時再加上 extra-usage/spend。
-- **本地用量表**彙整 `~/.claude/projects/**/*.jsonl` 對話紀錄(近 7 天、增量掃描)成逐模型 input/output/cache token、訊息數,以及按公開 API 價格估算的成本 — 訂閱用量是預付的,$ 欄位僅供比例參考。
+- **本地用量表**(詳細檢視,`d`)彙整對話紀錄成逐模型 token 與估算成本 — 參見[本地用量表](#本地用量表d-鍵)。
 
 ## 開發
 

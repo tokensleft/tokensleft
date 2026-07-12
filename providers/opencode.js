@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
+import { WEEK_MS, aggregateUsageEvents } from '../lib/local-usage.js';
 import { renderSingleAccount } from './codex.js';
 
 // OpenCode's "Go" plan has no usage API; the CLI stores per-session cost in a
@@ -119,6 +120,50 @@ async function loadCostRows(dbPath) {
   }
 }
 
+// Per-model local usage from assistant messages, mirroring `opencode stats`:
+// reasoning tokens fold into output, `tokens.input` already excludes cache
+// reads/writes, and cost is what OpenCode itself recorded per message.
+export async function loadLocalModels(dbPath, now) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const weekStart = now - WEEK_MS;
+
+  try {
+    const rows = db.prepare(
+      `SELECT time_created AS t,
+              json_extract(data, '$.providerID') AS providerID,
+              json_extract(data, '$.modelID') AS modelID,
+              coalesce(json_extract(data, '$.tokens.input'), 0) AS input,
+              coalesce(json_extract(data, '$.tokens.output'), 0) + coalesce(json_extract(data, '$.tokens.reasoning'), 0) AS output,
+              coalesce(json_extract(data, '$.tokens.cache.read'), 0) AS cacheRead,
+              coalesce(json_extract(data, '$.tokens.cache.write'), 0) AS cacheWrite,
+              json_extract(data, '$.cost') AS cost
+       FROM message
+       WHERE time_created >= ? AND json_valid(data) AND json_extract(data, '$.role') = 'assistant'`,
+    ).all(weekStart);
+
+    const events = rows.map((row) => ({
+      t: Number(row.t),
+      model: [row.providerID, row.modelID].filter(Boolean).join('/') || 'unknown',
+      input: Number(row.input) || 0,
+      output: Number(row.output) || 0,
+      cacheRead: Number(row.cacheRead) || 0,
+      cacheWrite: Number(row.cacheWrite) || 0,
+      cost: Number.isFinite(Number(row.cost)) && row.cost !== null ? Number(row.cost) : null,
+    })).filter((event) => Number.isFinite(event.t));
+
+    const todayStart = new Date(now).setHours(0, 0, 0, 0);
+    return { ok: true, models: aggregateUsageEvents([events], { weekStart, todayStart }) };
+  } finally {
+    db.close();
+  }
+}
+
+export const OPENCODE_LOCAL_OPTS = {
+  source: 'opencode.db',
+  note: '$ = cost recorded by OpenCode per message',
+};
+
 export function buildOpencodeItems(rows, { prefix = 'opencode', now = Date.now() } = {}) {
   const anchorMs = rows.reduce((min, row) => (min === null || row.createdMs < min ? row.createdMs : min), null);
   const weekStart = startOfUtcWeek(now);
@@ -164,12 +209,14 @@ export async function createOpencodeProvider(env) {
         return { ok: true, ms: Date.now() - startedAt, plan: 'Go', items: [{ kind: 'empty', key: 'opencode:none', label: 'Usage', message: 'no local usage history yet' }] };
       }
 
+      const local = await loadLocalModels(dbPath, Date.now())
+        .catch((error) => ({ ok: false, error: `cannot read opencode.db: ${error.message}`, models: [] }));
       let rows;
 
       try {
         rows = await loadCostRows(dbPath);
       } catch (error) {
-        return { ok: false, status: 'DB', error: `cannot read opencode.db: ${error.message}`, ms: Date.now() - startedAt, items: [] };
+        return { ok: false, status: 'DB', error: `cannot read opencode.db: ${error.message}`, ms: Date.now() - startedAt, items: [], local };
       }
 
       return {
@@ -177,11 +224,12 @@ export async function createOpencodeProvider(env) {
         ms: Date.now() - startedAt,
         plan: 'Go',
         items: buildOpencodeItems(rows),
+        local,
       };
     },
 
     render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'opencode');
+      return renderSingleAccount(snapshot, width, mode, 'opencode', OPENCODE_LOCAL_OPTS);
     },
 
     headerStatus(snapshot) {

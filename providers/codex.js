@@ -1,9 +1,10 @@
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { escapeBlessed } from '../lib/format.js';
+import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 import { parseJson } from '../lib/http.js';
 import { writeFileAtomic } from '../lib/fsx.js';
@@ -243,6 +244,223 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
   return items;
 }
 
+// --- local session-log aggregation ------------------------------------------------
+
+// USD per 1M tokens. Codex rollouts don't record prices, so cost is estimated
+// from public API rates: uncached input + cached input (90% off, except
+// codex-mini at 75% off) + output (reasoning is billed inside output).
+// Pro models don't support prompt caching, so their cached rate is inert.
+export const MODEL_PRICING = [
+  { match: /^gpt-5\.6-sol/, input: 5, cachedInput: 0.5, output: 30 },
+  { match: /^gpt-5\.6-terra/, input: 2.5, cachedInput: 0.25, output: 15 },
+  { match: /^gpt-5\.6-luna/, input: 1, cachedInput: 0.1, output: 6 },
+  { match: /^gpt-5\.5-pro/, input: 30, cachedInput: 30, output: 180 },
+  { match: /^gpt-5\.5/, input: 5, cachedInput: 0.5, output: 30 },
+  { match: /^gpt-5\.4-mini/, input: 0.75, cachedInput: 0.075, output: 4.5 },
+  { match: /^gpt-5\.4-nano/, input: 0.2, cachedInput: 0.02, output: 1.25 },
+  { match: /^gpt-5\.4/, input: 2.5, cachedInput: 0.25, output: 15 },
+  { match: /^gpt-5\.[23]/, input: 1.75, cachedInput: 0.175, output: 14 },
+  { match: /^gpt-5(\.1)?(-codex)?-mini/, input: 0.25, cachedInput: 0.025, output: 2 },
+  { match: /^gpt-5(\.1)?-nano/, input: 0.05, cachedInput: 0.005, output: 0.4 },
+  { match: /^gpt-5-pro/, input: 15, cachedInput: 15, output: 120 },
+  { match: /^gpt-5(\.1)?(-codex)?($|-)/, input: 1.25, cachedInput: 0.125, output: 10 },
+  { match: /^codex-mini/, input: 1.5, cachedInput: 0.375, output: 6 },
+];
+
+// Parses appended rollout lines. Usage is the delta of the cumulative
+// `total_token_usage` between consecutive token_count events — repeated
+// events (same totals) contribute nothing, unlike summing `last_token_usage`.
+// The first event's baseline is totals-minus-last. The model comes from the
+// surrounding turn_context records.
+//
+// Forked/resumed/subagent sessions replay the parent's whole token_count
+// history at the head of the child file, rewritten in one burst of
+// near-identical timestamps; the parent's own file already records that
+// usage. When the file is marked forked and its first two events share a
+// timestamp-second, the leading same-second events are skipped (they only
+// seed the running totals) — the same heuristic ccusage uses.
+export function parseRolloutChunk(text, state) {
+  const events = [];
+  const lines = String(text).split('\n');
+  const remainder = text.endsWith('\n') ? '' : lines.pop() ?? '';
+
+  for (const line of lines) {
+    if (!line || (!line.includes('"token_count"') && !line.includes('"turn_context"') && !line.includes('"session_meta"'))) {
+      continue;
+    }
+
+    const record = parseJson(line);
+
+    if (record?.type === 'session_meta') {
+      if (record.payload?.forked_from_id || line.includes('"thread_spawn"')) {
+        state.replay = true;
+      }
+
+      continue;
+    }
+
+    if (record?.type === 'turn_context') {
+      const model = record.payload?.model ?? record.payload?.model_name ?? record.payload?.metadata?.model;
+
+      if (typeof model === 'string' && model) {
+        state.model = model;
+        state.firstModel ??= model;
+      }
+
+      continue;
+    }
+
+    const info = record?.type === 'event_msg' && record.payload?.type === 'token_count' ? record.payload.info : null;
+    const totals = info?.total_token_usage;
+    const t = Date.parse(record?.timestamp || '');
+
+    if (!totals || !Number.isFinite(t)) {
+      continue;
+    }
+
+    const current = {
+      input: totals.input_tokens || 0,
+      cached: totals.cached_input_tokens || 0,
+      output: totals.output_tokens || 0,
+    };
+
+    if (state.replay) {
+      const sec = Math.floor(t / 1000);
+
+      if (state.burstSec === null && state.prevTotals === null) {
+        // Might be the replay burst or a genuinely new first event — hold it
+        // until the next event tells the two apart.
+        state.burstSec = sec;
+        state.pending = { t, model: state.model, totals: current, last: info.last_token_usage || {} };
+        state.prevTotals = current;
+        continue;
+      }
+
+      if (sec === state.burstSec) {
+        // Same second as the first event: it's a replay burst — drop the held
+        // event and swallow the rest of the burst, tracking totals only.
+        state.pending = null;
+        state.prevTotals = current;
+        continue;
+      }
+
+      state.replay = false;
+
+      if (state.pending) {
+        // Not a burst after all: the held first event was real usage.
+        const { totals: held, last } = state.pending;
+        const heldDelta = {
+          input: Math.min(held.input, last.input_tokens || 0),
+          cached: Math.min(held.cached, last.cached_input_tokens || 0),
+          output: Math.min(held.output, last.output_tokens || 0),
+        };
+
+        if (heldDelta.input + heldDelta.output > 0) {
+          events.push({ t: state.pending.t, model: state.pending.model, input: heldDelta.input, cached: heldDelta.cached, output: heldDelta.output });
+        }
+
+        state.pending = null;
+      }
+    }
+
+    const last = info.last_token_usage || {};
+    const base = state.prevTotals || {
+      input: Math.max(0, current.input - (last.input_tokens || 0)),
+      cached: Math.max(0, current.cached - (last.cached_input_tokens || 0)),
+      output: Math.max(0, current.output - (last.output_tokens || 0)),
+    };
+    const delta = {
+      input: Math.max(0, current.input - base.input),
+      cached: Math.max(0, current.cached - base.cached),
+      output: Math.max(0, current.output - base.output),
+    };
+    state.prevTotals = current;
+
+    if (delta.input + delta.output > 0) {
+      events.push({ t, model: state.model, input: delta.input, cached: delta.cached, output: delta.output });
+    }
+  }
+
+  return { events, remainder };
+}
+
+// `input_tokens` includes the cached tokens — split them out for the table.
+function toCodexUsage(event) {
+  const model = event.model || 'unknown';
+  const pricing = MODEL_PRICING.find((entry) => entry.match.test(model)) || null;
+  const input = Math.max(0, event.input - event.cached);
+
+  return {
+    model,
+    input,
+    output: event.output,
+    cacheRead: event.cached,
+    cacheWrite: 0,
+    cost: pricing
+      ? (input * pricing.input + event.cached * pricing.cachedInput + event.output * pricing.output) / 1e6
+      : null,
+  };
+}
+
+// Incremental scanner over CODEX_HOME/{sessions,archived_sessions}/YYYY/MM/DD/
+// rollout-*.jsonl. Archiving copies a rollout file, so when the same relative
+// path exists in both roots the active copy wins.
+export function createRolloutScanner(codexHome) {
+  const roots = [join(codexHome, 'archived_sessions'), join(codexHome, 'sessions')];
+  const refreshRollout = jsonlRefresher(parseRolloutChunk);
+
+  const listFiles = async () => {
+    const byRelPath = new Map(); // later roots (active sessions/) overwrite earlier
+    let found = false;
+
+    for (const root of roots) {
+      let entries;
+
+      try {
+        entries = await readdir(root, { recursive: true });
+      } catch {
+        continue;
+      }
+
+      found = true;
+
+      for (const entry of entries) {
+        if (entry.endsWith('.jsonl')) {
+          byRelPath.set(entry, join(root, entry));
+        }
+      }
+    }
+
+    if (!found) {
+      throw new Error(`no session logs at ${roots[1]}`);
+    }
+
+    return [...byRelPath.values()];
+  };
+
+  return createLocalUsageScanner({
+    listFiles,
+    initState: () => ({ model: null, firstModel: null, prevTotals: null, replay: false, burstSec: null, pending: null }),
+
+    async refreshFile(filePath, info, cached) {
+      await refreshRollout(filePath, info, cached);
+
+      // token_count events before the file's first turn_context get its model
+      for (const event of cached.events) {
+        if (event.model) {
+          break;
+        }
+
+        event.model = cached.state.firstModel;
+      }
+    },
+
+    toUsage: toCodexUsage,
+  });
+}
+
+export const CODEX_LOCAL_OPTS = { source: 'sessions' };
+
 export async function createCodexProvider(env) {
   const authPath = await findCodexAuthPath(env);
 
@@ -250,78 +468,24 @@ export async function createCodexProvider(env) {
     return null;
   }
 
+  const scanner = createRolloutScanner(dirname(authPath));
+
   return {
     id: 'codex',
     title: 'Codex',
     refreshMs: readRefreshMs(env, ['CODEX_REFRESH_SECONDS', 'CODEX_REFRESH_SEC'], DEFAULT_REFRESH_MS),
 
     async fetch() {
-      const startedAt = Date.now();
-      let auth;
-
-      try {
-        auth = await loadAuth(authPath);
-      } catch (error) {
-        return { ok: false, status: 'CRED', error: error.message, ms: Date.now() - startedAt, items: [] };
-      }
-
-      if (!auth.tokens?.access_token) {
-        return { ok: false, status: 'APIKEY', error: 'Codex usage is not available for API-key auth. Run `codex` to log in with ChatGPT.', ms: Date.now() - startedAt, items: [] };
-      }
-
-      let token = auth.tokens.access_token;
-
-      if (authNeedsRefresh(auth)) {
-        try {
-          token = (await refreshAuth(authPath, auth)) || token;
-        } catch (message) {
-          return { ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
-        }
-      }
-
-      let response;
-
-      try {
-        response = await requestUsage(token, auth.tokens.account_id);
-
-        if (response.status === 401 || response.status === 403) {
-          const refreshed = await refreshAuth(authPath, auth);
-
-          if (refreshed) {
-            token = refreshed;
-            response = await requestUsage(token, auth.tokens.account_id);
-          }
-        }
-      } catch (error) {
-        const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
-        return { ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
-      }
-
-      const text = await response.text();
-      const ms = Date.now() - startedAt;
-
-      if (response.status === 401 || response.status === 403) {
-        return { ok: false, status: response.status, error: 'Token expired. Run `codex` to log in again.', ms, items: [] };
-      }
-
-      const data = parseJson(text);
-
-      if (!response.ok || !data) {
-        return { ok: false, status: response.status, error: `HTTP ${response.status}`, body: text.slice(0, 300), ms, items: [] };
-      }
-
-      const headers = Object.fromEntries([...response.headers.entries()].map(([k, v]) => [k.toLowerCase(), v]));
-
-      return {
-        ok: true,
-        ms,
-        plan: data.plan_type || '',
-        items: buildCodexItems(data, headers),
-      };
+      const [local, snapshot] = await Promise.all([
+        scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
+        fetchCodexUsage(authPath),
+      ]);
+      snapshot.local = local;
+      return snapshot;
     },
 
     render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'codex');
+      return renderSingleAccount(snapshot, width, mode, 'codex', CODEX_LOCAL_OPTS);
     },
 
     headerStatus(snapshot) {
@@ -334,8 +498,76 @@ export async function createCodexProvider(env) {
   };
 }
 
+async function fetchCodexUsage(authPath) {
+  const startedAt = Date.now();
+  let auth;
+
+  try {
+    auth = await loadAuth(authPath);
+  } catch (error) {
+    return { ok: false, status: 'CRED', error: error.message, ms: Date.now() - startedAt, items: [] };
+  }
+
+  if (!auth.tokens?.access_token) {
+    return { ok: false, status: 'APIKEY', error: 'Codex usage is not available for API-key auth. Run `codex` to log in with ChatGPT.', ms: Date.now() - startedAt, items: [] };
+  }
+
+  let token = auth.tokens.access_token;
+
+  if (authNeedsRefresh(auth)) {
+    try {
+      token = (await refreshAuth(authPath, auth)) || token;
+    } catch (message) {
+      return { ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
+    }
+  }
+
+  let response;
+
+  try {
+    response = await requestUsage(token, auth.tokens.account_id);
+
+    if (response.status === 401 || response.status === 403) {
+      const refreshed = await refreshAuth(authPath, auth);
+
+      if (refreshed) {
+        token = refreshed;
+        response = await requestUsage(token, auth.tokens.account_id);
+      }
+    }
+  } catch (error) {
+    const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
+    return { ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
+  }
+
+  const text = await response.text();
+  const ms = Date.now() - startedAt;
+
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, status: response.status, error: 'Token expired. Run `codex` to log in again.', ms, items: [] };
+  }
+
+  const data = parseJson(text);
+
+  if (!response.ok || !data) {
+    return { ok: false, status: response.status, error: `HTTP ${response.status}`, body: text.slice(0, 300), ms, items: [] };
+  }
+
+  const headers = Object.fromEntries([...response.headers.entries()].map(([k, v]) => [k.toLowerCase(), v]));
+
+  return {
+    ok: true,
+    ms,
+    plan: data.plan_type || '',
+    items: buildCodexItems(data, headers),
+  };
+}
+
 // Shared single-account renderer for providers without multi-key support.
-export function renderSingleAccount(snapshot, width, mode, name) {
+// When the snapshot carries a `local` usage scan, the detail view (`d`)
+// appends the per-model table; `localOpts` labels/styles it (see
+// lib/local-usage.js renderLocalUsage).
+export function renderSingleAccount(snapshot, width, mode, name, localOpts) {
   if (snapshot.fatal) {
     return `  {red-fg}${escapeBlessed(snapshot.fatal)}{/red-fg}`;
   }
@@ -355,11 +587,14 @@ export function renderSingleAccount(snapshot, width, mode, name) {
     if (snapshot.body && !compact) {
       lines.push(`  {white-fg}${escapeBlessed(snapshot.body)}{/white-fg}`);
     }
-
-    return lines.join('\n');
+  } else {
+    const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;
+    lines.push(...snapshot.items.map((item) => itemFormatter(item, width)));
   }
 
-  const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;
-  lines.push(...snapshot.items.map((item) => itemFormatter(item, width)));
+  if (snapshot.local && !compact) {
+    lines.push('', renderLocalUsage(snapshot.local, localOpts));
+  }
+
   return lines.join('\n');
 }

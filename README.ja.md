@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md)
 
-トークンはあとどれくらい残ってる?AI サブスクリプションのクォータをターミナル 1 画面で — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai。バーンレート予測、しきい値アラート、認証情報の自動検出 + OAuth トークン自動リフレッシュ、さらに Claude Code のローカル・モデル別トークン/コスト集計(Fable 含む)を搭載。
+トークンはあとどれくらい残ってる?AI サブスクリプションのクォータをターミナル 1 画面で — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai。バーンレート予測、しきい値アラート、認証情報の自動検出 + OAuth トークン自動リフレッシュ、さらに Claude Code(Fable 含む)、Codex、Gemini CLI、OpenCode のローカル・モデル別トークン/コスト集計を搭載。
 
 ![tokensleft ダッシュボード — 検出された各プロバイダのクォータバー、ペース予測、モデル別コスト表](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
 
@@ -18,12 +18,12 @@ npx tokensleft
 |---|---|
 | `npx tokensleft` | 検出された全プロバイダを 1 つの TUI に |
 | `npx tokensleft claude` | Claude Code のレート制限(Session / Weekly / モデル別 例: Fable)+ ローカルのトークン & コスト表 |
-| `npx tokensleft codex` | Codex(ChatGPT プラン)の session/weekly/モデル制限、reviews、credits |
-| `npx tokensleft gemini` | Gemini CLI の Pro/Flash 日次クォータ |
+| `npx tokensleft codex` | Codex(ChatGPT プラン)の session/weekly/モデル制限、reviews、credits + ローカルのトークン & コスト表 |
+| `npx tokensleft gemini` | Gemini CLI の Pro/Flash 日次クォータ + ローカルのトークン & コスト表 |
 | `npx tokensleft copilot` | GitHub Copilot の premium/chat クォータ(無料プラン: chat/completions) |
 | `npx tokensleft grok` | Grok CLI の月間クレジット + 従量課金上限 |
 | `npx tokensleft antigravity` | Antigravity のモデルプール別クォータ(Gemini Pro / Flash / Claude) |
-| `npx tokensleft opencode` | OpenCode Go プランの支出 vs session/週/月のドル上限 |
+| `npx tokensleft opencode` | OpenCode Go プランの支出 vs session/週/月のドル上限 + ローカルのモデル別表 |
 | `npx tokensleft zai` | z.ai アカウントのクォータ |
 | `npx tokensleft claude codex` | プロバイダの任意の組み合わせ |
 | `npx tokensleft --demo` | ランダム生成のリアルなダミーデータ — スクリーンショット用 |
@@ -57,7 +57,7 @@ Node.js ≥ 22.13 が必要です。
 
 ## TUI のキー操作
 
-`r` 全体リフレッシュ · `1`-`9` 個別リフレッシュ · `d` 詳細表示切替 · `q`/`Esc` 終了 · 矢印キー/マウスでスクロール。
+`r` 全体リフレッシュ · `1`-`9` 個別リフレッシュ · `d` 詳細表示(ローカルのモデル別使用量テーブルを追加表示) · `q`/`Esc` 終了 · 矢印キー/PgUp/PgDn/マウスでスクロール。
 
 ## 数字の仕組み
 
@@ -68,12 +68,25 @@ Node.js ≥ 22.13 が必要です。
 - 線形ペースがリセット**前**に 100% を超える場合、`⚠ dry in X` と到達時刻が表示されます。
 - 80% / 90% を超えるとターミナルベルが鳴り、ヘッダーに赤いアラートが出ます。
 
+## ローカル使用量テーブル(`d` キー)
+
+クォータバーが示すのはパーセント、ローカルテーブルが示すのはその中身です。`d`(詳細表示 — `--once` が出力する内容と同じ)を押すと、直近 7 日間のモデル別内訳が表示されます。各 CLI 自身がディスクに残すログからの集計で、増分スキャン、データがマシンの外に出ることはありません:
+
+| プロバイダ | ソース | 備考 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/**/*.jsonl` のトランスクリプト | input/output/cache-read/cache-write を分けて集計、メッセージ id で重複排除 |
+| Codex | `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl` | セッション累計値から差分を取るため、重複イベントやフォーク/再開されたセッションも二重計上しない |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*` のセッションチェックポイント(.json と .jsonl) | thought トークンは output、ツールプロンプトは input として計上 |
+| OpenCode | `opencode.db`(SQLite、読み取り専用) | プロバイダ/モデル別。`$` は OpenCode 自身がメッセージごとに記録したコスト |
+
+Claude Code、Codex、Gemini の `$` 列は公開 API 価格ベースの推定です(キャッシュの読み書きは割引価格で計算)— サブスクリプションの使用量は前払いなので、課金額ではなくスケール感の参考です。価格が公開されていないモデルは `?` と表示されます。
+
 ## Claude Code 固有の仕様
 
 - **自動(システム)キー**:**リフレッシュごとに** `~/.claude/.credentials.json`(または `CLAUDE_CONFIG_DIR`)から再読込。期限切れトークンは保存済み refresh token で更新して書き戻すため(minified JSON、アトミック)、ローテーション後も Claude Code はそのまま動き続けます。
 - **手動キー**:`.env` の `CLAUDE_TOKEN_1..N`(+ `CLAUDE_NAME_1..N`)または `CLAUDE_CODE_OAUTH_TOKEN` — 追加アカウントや Claude Code 未導入マシン用。システムトークンと重複するものはスキップ。
 - **レート制限**は Anthropic の OAuth usage エンドポイント由来:5 時間セッション、週間全モデル、モデル別週間スコープ(例: Fable)、有効時は extra-usage/spend も。
-- **ローカル使用量テーブル**は `~/.claude/projects/**/*.jsonl` のトランスクリプト(直近 7 日、増分スキャン)をモデル別の input/output/cache トークン、メッセージ数、公開 API 価格ベースの推定コストに集計 — サブスクリプションは前払いなので $ 列はスケール感の参考です。
+- **ローカル使用量テーブル**(詳細表示、`d`)はトランスクリプトをモデル別トークンと推定コストに集計 — [ローカル使用量テーブル](#ローカル使用量テーブルd-キー) を参照。
 
 ## 開発
 

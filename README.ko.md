@@ -2,7 +2,7 @@
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **한국어**
 
-토큰이 얼마나 남았지? AI 구독 쿼터를 터미널 대시보드 하나로 — Claude Code(Anthropic), Codex(OpenAI), Gemini CLI, GitHub Copilot, Grok CLI, Antigravity, OpenCode, z.ai. 소진 속도 예측, 임계값 알림, 자격 증명 자동 탐지 + OAuth 토큰 자동 갱신, 그리고 Claude Code의 로컬 모델별 토큰/비용 집계(Fable 포함)까지 제공합니다.
+토큰이 얼마나 남았지? AI 구독 쿼터를 터미널 대시보드 하나로 — Claude Code(Anthropic), Codex(OpenAI), Gemini CLI, GitHub Copilot, Grok CLI, Antigravity, OpenCode, z.ai. 소진 속도 예측, 임계값 알림, 자격 증명 자동 탐지 + OAuth 토큰 자동 갱신, 그리고 Claude Code(Fable 포함), Codex, Gemini CLI, OpenCode의 로컬 모델별 토큰/비용 집계까지 제공합니다.
 
 ![tokensleft 대시보드 — 감지된 모든 프로바이더의 쿼터 바, 페이스 예측, 모델별 비용 표](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
 
@@ -18,12 +18,12 @@ npx tokensleft
 |---|---|
 | `npx tokensleft` | 감지된 모든 프로바이더를 하나의 TUI로 |
 | `npx tokensleft claude` | Claude Code 사용량 제한(Session / Weekly / 모델별 예: Fable) + 로컬 토큰 & 비용 표 |
-| `npx tokensleft codex` | Codex(ChatGPT 플랜) session/weekly/모델 제한, reviews, credits |
-| `npx tokensleft gemini` | Gemini CLI Pro/Flash 일일 쿼터 |
+| `npx tokensleft codex` | Codex(ChatGPT 플랜) session/weekly/모델 제한, reviews, credits + 로컬 토큰 & 비용 표 |
+| `npx tokensleft gemini` | Gemini CLI Pro/Flash 일일 쿼터 + 로컬 토큰 & 비용 표 |
 | `npx tokensleft copilot` | GitHub Copilot premium/chat 쿼터(무료 플랜: chat/completions) |
 | `npx tokensleft grok` | Grok CLI 월간 크레딧 + 종량제 상한 |
 | `npx tokensleft antigravity` | Antigravity 모델 풀별 쿼터(Gemini Pro / Flash / Claude) |
-| `npx tokensleft opencode` | OpenCode Go 플랜 지출 vs session/주간/월간 달러 한도 |
+| `npx tokensleft opencode` | OpenCode Go 플랜 지출 vs session/주간/월간 달러 한도 + 로컬 모델별 표 |
 | `npx tokensleft zai` | z.ai 계정 쿼터 |
 | `npx tokensleft claude codex` | 프로바이더 임의 조합 |
 | `npx tokensleft --demo` | 무작위로 생성된 그럴듯한 데이터 — 스크린샷용 |
@@ -57,7 +57,7 @@ Node.js ≥ 22.13이 필요합니다.
 
 ## TUI 단축키
 
-`r` 전체 새로고침 · `1`-`9` 개별 프로바이더 새로고침 · `d` 상세 모드 전환 · `q`/`Esc` 종료 · 화살표/마우스 스크롤.
+`r` 전체 새로고침 · `1`-`9` 개별 프로바이더 새로고침 · `d` 상세 보기(로컬 모델별 사용량 표 추가) · `q`/`Esc` 종료 · 화살표/PgUp/PgDn/마우스 스크롤.
 
 ## 숫자 계산 방식
 
@@ -68,12 +68,25 @@ Node.js ≥ 22.13이 필요합니다.
 - 선형 페이스가 리셋 **전에** 100%를 넘으면 `⚠ dry in X`와 도달 시각이 표시됩니다.
 - 80% / 90%를 넘으면 터미널 벨이 울리고 헤더에 빨간 경고가 표시됩니다.
 
+## 로컬 사용량 표(`d` 키)
+
+쿼터 바는 퍼센트를 보여주고, 로컬 표는 그 구성을 보여줍니다. `d`를 누르면(상세 보기 — `--once`가 출력하는 내용이기도 함) 각 CLI가 디스크에 남긴 자체 로그를 집계한 최근 7일의 모델별 내역이 표시됩니다 — 증분 스캔이며, 어떤 데이터도 머신 밖으로 나가지 않습니다:
+
+| 프로바이더 | 소스 | 비고 |
+|---|---|---|
+| Claude Code | `~/.claude/projects/**/*.jsonl` 대화 기록 | input/output/cache-read/cache-write 구분, 메시지 id로 중복 제거 |
+| Codex | `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl` | 세션 누적 합계의 차분으로 사용량을 계산하므로 반복 이벤트나 포크/재개된 세션이 이중 집계되지 않음 |
+| Gemini CLI | `~/.gemini/tmp/*/chats/*` 세션 체크포인트(.json 및 .jsonl) | thought 토큰은 output으로, 도구 프롬프트는 input으로 집계 |
+| OpenCode | `opencode.db`(SQLite, 읽기 전용) | 프로바이더/모델별; `$`는 OpenCode 자체가 메시지별로 기록한 비용 |
+
+Claude Code, Codex, Gemini의 `$` 열은 공개 API 가격 기준 추정치입니다(캐시 읽기/쓰기는 할인된 요율로 계산) — 구독 사용량은 선불이므로 규모 참고용이지 청구액이 아닙니다. 공개 가격이 없는 모델은 `?`로 표시됩니다.
+
 ## Claude Code 관련 세부 사항
 
 - **자동(시스템) 키**: **새로고침마다** `~/.claude/.credentials.json`(또는 `CLAUDE_CONFIG_DIR`)에서 재읽기. 만료된 토큰은 저장된 refresh token으로 갱신해 다시 기록하므로(minified JSON, 원자적 쓰기) 회전된 토큰으로도 Claude Code가 계속 동작합니다.
 - **수동 키**: `.env`의 `CLAUDE_TOKEN_1..N`(+ `CLAUDE_NAME_1..N`) 또는 `CLAUDE_CODE_OAUTH_TOKEN` — 추가 계정이나 Claude Code가 없는 머신용. 시스템 토큰과 중복되면 건너뜁니다.
 - **사용량 제한**은 Anthropic의 OAuth usage 엔드포인트에서 가져옵니다: 5시간 세션, 주간 전체 모델, 모델별 주간 범위(예: Fable), 활성화 시 extra-usage/spend 포함.
-- **로컬 사용량 표**는 `~/.claude/projects/**/*.jsonl` 대화 기록(최근 7일, 증분 스캔)을 모델별 input/output/cache 토큰, 메시지 수, 공개 API 가격 기준 추정 비용으로 집계합니다 — 구독 사용량은 선불이므로 $ 열은 규모 참고용입니다.
+- **로컬 사용량 표**(상세 보기, `d`)는 대화 기록을 모델별 토큰과 추정 비용으로 집계합니다 — [로컬 사용량 표](#로컬-사용량-표d-키) 참고.
 
 ## 개발
 

@@ -1,11 +1,12 @@
-import { access, open, readFile, readdir, stat } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { claudeConfigDir } from '../lib/claude-settings.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed, formatTokens, maskKey, padStart, padVisible } from '../lib/format.js';
+import { escapeBlessed } from '../lib/format.js';
 import { parseJson, parseRetryAfterDate } from '../lib/http.js';
+import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -377,169 +378,62 @@ export function parseTranscriptChunk(text) {
   return { events, remainder };
 }
 
-// Incremental scanner: transcripts are append-only, so we remember the byte
-// offset of the last complete line per file and only parse what was appended.
-export function createTranscriptScanner(configDir) {
-  const fileCache = new Map(); // path -> { offset, events }
-
-  const readSlice = async (filePath, position, length) => {
-    const handle = await open(filePath, 'r');
-
-    try {
-      const buffer = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buffer, 0, length, position);
-      return buffer.subarray(0, bytesRead).toString('utf8');
-    } finally {
-      await handle.close();
-    }
-  };
-
-  const updateFile = async (filePath, size) => {
-    let cached = fileCache.get(filePath);
-
-    if (cached && size < cached.offset) {
-      cached = null; // file shrank (rotated/rewritten) — reparse
-    }
-
-    if (!cached) {
-      cached = { offset: 0, events: [] };
-      fileCache.set(filePath, cached);
-    }
-
-    if (size > cached.offset) {
-      const text = await readSlice(filePath, cached.offset, size - cached.offset);
-      const { events, remainder } = parseTranscriptChunk(text);
-      cached.events.push(...events);
-      cached.offset += Buffer.byteLength(text, 'utf8') - Buffer.byteLength(remainder, 'utf8');
-    }
-
-    return cached;
-  };
+// Maps a transcript event to the canonical usage-event shape, pricing it at
+// public API rates (cache read = 0.1x input, cache write 5m = 1.25x, 1h = 2x).
+function toClaudeUsage(event) {
+  const pricing = MODEL_PRICING.find((entry) => entry.match.test(event.model)) || null;
 
   return {
-    async scan(now = Date.now()) {
-      const projectsDir = join(configDir, 'projects');
-      const weekStart = now - WEEKLY_PERIOD_MS;
-      const todayStart = new Date(now).setHours(0, 0, 0, 0);
-      const seenFiles = new Set();
-      let files = 0;
-
-      let projectNames;
-
-      try {
-        projectNames = await readdir(projectsDir);
-      } catch {
-        return { ok: false, error: `no transcripts at ${projectsDir}`, models: [] };
-      }
-
-      for (const project of projectNames) {
-        const dir = join(projectsDir, project);
-        let entries = [];
-
-        try {
-          entries = await readdir(dir);
-        } catch {
-          continue;
-        }
-
-        for (const entry of entries) {
-          if (!entry.endsWith('.jsonl')) {
-            continue;
-          }
-
-          const filePath = join(dir, entry);
-          const info = await stat(filePath).catch(() => null);
-
-          if (!info || info.mtimeMs < weekStart) {
-            fileCache.delete(filePath);
-            continue;
-          }
-
-          files += 1;
-          seenFiles.add(filePath);
-
-          try {
-            const cached = await updateFile(filePath, info.size);
-            cached.events = cached.events.filter((event) => event.t >= weekStart);
-          } catch {
-            fileCache.delete(filePath);
-          }
-        }
-      }
-
-      for (const filePath of fileCache.keys()) {
-        if (!seenFiles.has(filePath)) {
-          fileCache.delete(filePath);
-        }
-      }
-
-      return { ok: true, files, models: aggregateEvents(fileCache, { weekStart, todayStart }) };
-    },
+    model: event.model,
+    input: event.input,
+    output: event.output,
+    cacheRead: event.cacheRead,
+    cacheWrite: event.cache5m + event.cache1h,
+    cost: pricing
+      ? (
+        event.input * pricing.input +
+        event.output * pricing.output +
+        event.cacheRead * pricing.input * 0.1 +
+        event.cache5m * pricing.input * 1.25 +
+        event.cache1h * pricing.input * 2
+      ) / 1e6
+      : null,
   };
 }
 
-export function aggregateEvents(fileCache, { weekStart, todayStart }) {
-  const perModel = new Map();
-  const seen = new Set();
+// Incremental scanner over ~/.claude/projects/**/*.jsonl transcripts.
+export function createTranscriptScanner(configDir) {
+  const projectsDir = join(configDir, 'projects');
 
-  for (const { events } of fileCache.values()) {
-    for (const event of events) {
-      if (event.t < weekStart) {
-        continue;
-      }
+  const listFiles = async () => {
+    let projectNames;
 
-      if (event.id) {
-        if (seen.has(event.id)) {
-          continue;
+    try {
+      projectNames = await readdir(projectsDir);
+    } catch {
+      throw new Error(`no transcripts at ${projectsDir}`);
+    }
+
+    const paths = [];
+
+    for (const project of projectNames) {
+      const entries = await readdir(join(projectsDir, project)).catch(() => []);
+
+      for (const entry of entries) {
+        if (entry.endsWith('.jsonl')) {
+          paths.push(join(projectsDir, project, entry));
         }
-
-        seen.add(event.id);
-      }
-
-      let bucket = perModel.get(event.model);
-
-      if (!bucket) {
-        bucket = {
-          model: event.model,
-          pricing: MODEL_PRICING.find((entry) => entry.match.test(event.model)) || null,
-          today: emptyUsage(),
-          week: emptyUsage(),
-        };
-        perModel.set(event.model, bucket);
-      }
-
-      addUsage(bucket.week, event, bucket.pricing);
-
-      if (event.t >= todayStart) {
-        addUsage(bucket.today, event, bucket.pricing);
       }
     }
-  }
 
-  return [...perModel.values()].sort((a, b) => (b.week.cost - a.week.cost) || (b.week.output - a.week.output));
-}
+    return paths;
+  };
 
-function emptyUsage() {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, messages: 0, cost: 0, hasCost: false };
-}
-
-function addUsage(target, event, pricing) {
-  target.input += event.input;
-  target.output += event.output;
-  target.cacheRead += event.cacheRead;
-  target.cacheWrite += event.cache5m + event.cache1h;
-  target.messages += 1;
-
-  if (pricing) {
-    target.hasCost = true;
-    target.cost += (
-      event.input * pricing.input +
-      event.output * pricing.output +
-      event.cacheRead * pricing.input * 0.1 +
-      event.cache5m * pricing.input * 1.25 +
-      event.cache1h * pricing.input * 2
-    ) / 1e6;
-  }
+  return createLocalUsageScanner({
+    listFiles,
+    refreshFile: jsonlRefresher(parseTranscriptChunk),
+    toUsage: toClaudeUsage,
+  });
 }
 
 // --- rendering -------------------------------------------------------------------
@@ -581,107 +475,14 @@ function renderAccountBlock(result, width, mode = 'detail') {
   return lines.join('\n');
 }
 
-export function formatModelTable(models) {
-  const rows = [];
-  const header = [
-    padVisible('model', 22),
-    padStart('today out', 10),
-    padStart('today $', 9),
-    padStart('7d in', 9),
-    padStart('7d out', 9),
-    padStart('7d cache', 10),
-    padStart('7d $', 9),
-    padStart('msgs', 7),
-  ].join(' ');
-  rows.push(`  {white-fg}{underline}${escapeBlessed(header)}{/underline}{/white-fg}`);
+export const CLAUDE_LOCAL_OPTS = {
+  source: 'transcripts',
+  shorten: (model) => model.replace(/^claude-/, '').replace(/-\d{8}$/, ''),
+  tone: (model) => /fable|mythos/.test(model) ? 'magenta' : /opus/.test(model) ? 'yellow' : 'white',
+};
 
-  const totals = { todayOut: 0, todayCost: 0, weekIn: 0, weekOut: 0, weekCache: 0, weekCost: 0, messages: 0 };
-
-  for (const entry of models) {
-    const line = [
-      padVisible(entry.model.replace(/^claude-/, '').replace(/-\d{8}$/, ''), 22),
-      padStart(formatTokens(entry.today.output), 10),
-      padStart(formatCost(entry.today), 9),
-      padStart(formatTokens(entry.week.input), 9),
-      padStart(formatTokens(entry.week.output), 9),
-      padStart(formatTokens(entry.week.cacheRead + entry.week.cacheWrite), 10),
-      padStart(formatCost(entry.week), 9),
-      padStart(String(entry.week.messages), 7),
-    ].join(' ');
-    const tone = /fable|mythos/.test(entry.model) ? 'magenta' : /opus/.test(entry.model) ? 'yellow' : 'white';
-    rows.push(`  {${tone}-fg}${escapeBlessed(line)}{/${tone}-fg}`);
-
-    totals.todayOut += entry.today.output;
-    totals.todayCost += entry.today.cost;
-    totals.weekIn += entry.week.input;
-    totals.weekOut += entry.week.output;
-    totals.weekCache += entry.week.cacheRead + entry.week.cacheWrite;
-    totals.weekCost += entry.week.cost;
-    totals.messages += entry.week.messages;
-  }
-
-  const totalLine = [
-    padVisible('total', 22),
-    padStart(formatTokens(totals.todayOut), 10),
-    padStart(`$${totals.todayCost.toFixed(2)}`, 9),
-    padStart(formatTokens(totals.weekIn), 9),
-    padStart(formatTokens(totals.weekOut), 9),
-    padStart(formatTokens(totals.weekCache), 10),
-    padStart(`$${totals.weekCost.toFixed(2)}`, 9),
-    padStart(String(totals.messages), 7),
-  ].join(' ');
-  rows.push(`  {bold}${escapeBlessed(totalLine)}{/bold}`);
-  rows.push('  {gray-fg}$ = estimated from public API prices; subscription usage is prepaid{/gray-fg}');
-
-  return rows.join('\n');
-}
-
-// Compact local usage: one line per model, totals only when several models.
-export function formatLocalCompact(local) {
-  if (!local.ok) {
-    return `  {red-fg}local: ${escapeBlessed(local.error || 'scan failed')}{/red-fg}`;
-  }
-
-  if (local.models.length === 0) {
-    return '  {white-fg}local: no usage in the last 7 days{/white-fg}';
-  }
-
-  const lines = local.models.map((entry) => {
-    const name = entry.model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
-    const tone = /fable|mythos/.test(entry.model) ? 'magenta' : /opus/.test(entry.model) ? 'yellow' : 'white';
-    const text = [
-      `today ${formatTokens(entry.today.output)} out ${formatCost(entry.today)}`,
-      `7d ${formatTokens(entry.week.output)} out ${formatCost(entry.week)}`,
-      `cache ${formatTokens(entry.week.cacheRead + entry.week.cacheWrite)}`,
-      `${entry.week.messages} msgs`,
-    ].join(' · ');
-
-    return `  {bold}${escapeBlessed(name.padEnd(12))}{/bold} {${tone}-fg}${escapeBlessed(text)}{/${tone}-fg}`;
-  });
-
-  if (local.models.length > 1) {
-    const totals = local.models.reduce((acc, entry) => {
-      acc.todayCost += entry.today.cost;
-      acc.weekOut += entry.week.output;
-      acc.weekCost += entry.week.cost;
-      return acc;
-    }, { todayCost: 0, weekOut: 0, weekCost: 0 });
-    lines.push(`  {bold}${'total'.padEnd(12)}{/bold} today $${totals.todayCost.toFixed(2)} · 7d ${formatTokens(totals.weekOut)} out $${totals.weekCost.toFixed(2)}`);
-  }
-
-  return lines.join('\n');
-}
-
-function formatCost(usage) {
-  if (!usage.hasCost) {
-    return usage.messages > 0 ? '?' : '$0.00';
-  }
-
-  return `$${usage.cost.toFixed(2)}`;
-}
-
-// Full provider view: one block per account plus the local-usage section.
-// Shared with the demo provider (lib/demo.js).
+// Full provider view: one block per account, plus the local-usage section in
+// the detail view (`d`). Shared with the demo provider (lib/demo.js).
 export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
   if (snapshot.fatal) {
     return `  {red-fg}${escapeBlessed(snapshot.fatal)}{/red-fg}`;
@@ -692,17 +493,8 @@ export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
     .filter((result) => result.status !== 'DUP')
     .map((result) => renderAccountBlock(result, width, mode));
 
-  if (compact) {
-    sections.push(formatLocalCompact(snapshot.local));
-  } else {
-    sections.push([
-      `{cyan-fg}{bold}Local usage by model{/bold}{/cyan-fg} {white-fg}(transcripts, last 7 days${snapshot.local.ok ? ` | ${snapshot.local.files} files` : ''}){/white-fg}`,
-      snapshot.local.ok
-        ? snapshot.local.models.length > 0
-          ? formatModelTable(snapshot.local.models)
-          : '  {white-fg}no usage recorded in the last 7 days{/white-fg}'
-        : `  {red-fg}${escapeBlessed(snapshot.local.error || 'scan failed')}{/red-fg}`,
-    ].join('\n'));
+  if (!compact) {
+    sections.push(renderLocalUsage(snapshot.local, CLAUDE_LOCAL_OPTS));
   }
 
   return sections.join(compact ? '\n' : '\n\n');
