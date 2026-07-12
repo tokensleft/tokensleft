@@ -19,6 +19,7 @@ function item(overrides = {}) {
     severity: '',
     active: false,
     resetAt: new Date(Date.now() + HOUR),
+    exhausted: false,
     depletesAt: null,
     details: [],
     ...overrides,
@@ -80,6 +81,49 @@ test('compact item shows ahead-of-pace and dry warning', () => {
   }), 100));
   assert.match(line, /▲\+20%/);
   assert.match(line, /⚠ dry/);
+});
+
+test('an exhausted quota shows a static warning, not a ticking dry time', () => {
+  const compact = stripBlessedTags(formatUsageItemCompact(item({
+    percent: 100,
+    value: '100%',
+    paceDelta: 30,
+    projectedPercent: 143,
+    exhausted: true,
+    depletesAt: null,
+  }), 100));
+  assert.match(compact, /⚠ exhausted/);
+  assert.ok(!/dry/.test(compact), 'no ticking "dry X ago" for an already-exhausted quota');
+
+  const detail = stripBlessedTags(formatUsageItem(item({
+    percent: 100,
+    value: '100%',
+    exhausted: true,
+    depletesAt: null,
+  }), 96));
+  assert.match(detail, /quota exhausted/);
+  assert.ok(!/run dry/.test(detail));
+});
+
+test('a quota caught going dry shows the anchored "ago" time', () => {
+  const wentDry = new Date(Date.now() - 8 * (HOUR / 60)); // 8 minutes ago
+  const compact = stripBlessedTags(formatUsageItemCompact(item({
+    percent: 100,
+    value: '100%',
+    paceDelta: 30,
+    exhausted: true,
+    depletesAt: wentDry,
+  }), 100));
+  assert.match(compact, /⚠ dry .*ago/);
+  assert.ok(!/exhausted/.test(compact));
+
+  const detail = stripBlessedTags(formatUsageItem(item({
+    percent: 100,
+    value: '100%',
+    exhausted: true,
+    depletesAt: wentDry,
+  }), 96));
+  assert.match(detail, /ran dry .*ago — waiting for reset/);
 });
 
 test('compact item folds count values inline and puts details on their own line', () => {

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   buildUsageItem,
   elapsedPercent,
+  resetUsageHistory,
   toDate,
 } from '../lib/forecast.js';
 
@@ -72,14 +73,59 @@ test('depletion time is where the linear pace crosses 100% before reset', () => 
   const warning = buildUsageItem({ key: 'w1', label: 'W', percent: 80, resetAt, periodMs: 7 * DAY, now });
   assert.ok(warning.depletesAt instanceof Date);
   assert.equal(warning.depletesAt.getTime(), now - 5 * DAY + 6.25 * DAY);
+  assert.equal(warning.exhausted, false);
 
   // Behind pace → projection stays under 100% → no depletion time.
   const behind = buildUsageItem({ key: 'w2', label: 'W', percent: 50, resetAt, periodMs: 7 * DAY, now });
   assert.equal(behind.depletesAt, null);
+  assert.equal(behind.exhausted, false);
 
-  // Fully exhausted → dry now.
+  // Already at/over 100% on first sight → exhausted, with no forecast crossing
+  // that would reset to "now" on every refresh.
+  resetUsageHistory();
   const dry = buildUsageItem({ key: 'w3', label: 'W', percent: 100, resetAt, periodMs: 7 * DAY, now });
-  assert.equal(dry.depletesAt.getTime(), now);
+  assert.equal(dry.exhausted, true);
+  assert.equal(dry.depletesAt, null);
+
+  const over = buildUsageItem({ key: 'w4', label: 'W', percent: 120, resetAt, periodMs: 7 * DAY, now });
+  assert.equal(over.exhausted, true);
+  assert.equal(over.depletesAt, null);
+});
+
+test('a quota caught crossing into exhausted anchors dry to that moment', () => {
+  resetUsageHistory();
+  const t0 = Date.parse('2026-07-03T00:00:00Z');
+  const resetAt = new Date(t0 + 2 * DAY);
+  const key = 'catch:weekly';
+
+  // seen below 100 first (and behind pace, so no forecast crossing either)
+  const before = buildUsageItem({ key, label: 'W', percent: 50, resetAt, periodMs: 7 * DAY, now: t0 });
+  assert.equal(before.exhausted, false);
+  assert.equal(before.depletesAt, null);
+
+  // a refresh 5 min later catches it at 100 — dry is anchored to that crossing
+  const t1 = t0 + 5 * 60 * 1000;
+  const caught = buildUsageItem({ key, label: 'W', percent: 100, resetAt, periodMs: 7 * DAY, now: t1 });
+  assert.equal(caught.exhausted, true);
+  assert.equal(caught.depletesAt.getTime(), t1);
+
+  // later refreshes keep the same crossing time, not the new now
+  const t2 = t1 + 30 * 60 * 1000;
+  const still = buildUsageItem({ key, label: 'W', percent: 100, resetAt, periodMs: 7 * DAY, now: t2 });
+  assert.equal(still.depletesAt.getTime(), t1);
+
+  // dropping back below 100 forgets it, so a later crossing re-anchors
+  buildUsageItem({ key, label: 'W', percent: 80, resetAt, periodMs: 7 * DAY, now: t2 + 60_000 });
+  const again = buildUsageItem({ key, label: 'W', percent: 100, resetAt, periodMs: 7 * DAY, now: t2 + 120_000 });
+  assert.equal(again.depletesAt.getTime(), t2 + 120_000);
+});
+
+test('a quota already exhausted on first sight has no dry timestamp', () => {
+  resetUsageHistory();
+  const t0 = Date.parse('2026-07-03T00:00:00Z');
+  const item = buildUsageItem({ key: 'startup:exhausted', label: 'W', percent: 100, resetAt: new Date(t0 + 2 * DAY), periodMs: 7 * DAY, now: t0 });
+  assert.equal(item.exhausted, true);
+  assert.equal(item.depletesAt, null);
 });
 
 test('buildUsageItem keeps the standard shape', () => {
