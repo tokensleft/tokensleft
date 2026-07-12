@@ -70,7 +70,7 @@ One deliberately simple forecast: linear extrapolation of the window so far. If 
 
 ## Local usage tables (the `d` key)
 
-Quota bars show percentages; the local tables show what they're made of. Press `d` (the detail view — also what `--once` prints) for a per-model breakdown of the last 7 days, aggregated from each CLI's own on-disk logs — incremental scans, nothing leaves your machine:
+Quota bars show percentages; the local tables show what they're made of. Press `d` (the detail view — also what `--once` prints) for a per-model breakdown across today / 7 days / 30 days / all time (all time = whatever logs are still on disk), aggregated from each CLI's own on-disk logs — the first scan reads full history, later ones only what was appended, and nothing leaves your machine:
 
 | Provider | Source | Notes |
 |---|---|---|

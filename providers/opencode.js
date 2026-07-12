@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
-import { WEEK_MS, aggregateUsageEvents } from '../lib/local-usage.js';
+import { aggregateUsageEvents } from '../lib/local-usage.js';
 import { renderSingleAccount } from './codex.js';
 
 // OpenCode's "Go" plan has no usage API; the CLI stores per-session cost in a
@@ -126,7 +126,6 @@ async function loadCostRows(dbPath) {
 export async function loadLocalModels(dbPath, now) {
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(dbPath, { readOnly: true });
-  const weekStart = now - WEEK_MS;
 
   try {
     const rows = db.prepare(
@@ -139,8 +138,8 @@ export async function loadLocalModels(dbPath, now) {
               coalesce(json_extract(data, '$.tokens.cache.write'), 0) AS cacheWrite,
               json_extract(data, '$.cost') AS cost
        FROM message
-       WHERE time_created >= ? AND json_valid(data) AND json_extract(data, '$.role') = 'assistant'`,
-    ).all(weekStart);
+       WHERE json_valid(data) AND json_extract(data, '$.role') = 'assistant'`,
+    ).all();
 
     const events = rows.map((row) => ({
       t: Number(row.t),
@@ -152,8 +151,7 @@ export async function loadLocalModels(dbPath, now) {
       cost: Number.isFinite(Number(row.cost)) && row.cost !== null ? Number(row.cost) : null,
     })).filter((event) => Number.isFinite(event.t));
 
-    const todayStart = new Date(now).setHours(0, 0, 0, 0);
-    return { ok: true, models: aggregateUsageEvents([events], { weekStart, todayStart }) };
+    return { ok: true, models: aggregateUsageEvents([events], { now }) };
   } finally {
     db.close();
   }

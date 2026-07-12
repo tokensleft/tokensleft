@@ -12,34 +12,44 @@ import { stripBlessedTags } from '../lib/format.js';
 
 // --- shared aggregation -------------------------------------------------------
 
-test('aggregateUsageEvents buckets today/week per model and dedupes by id', () => {
+test('aggregateUsageEvents buckets today/7d/30d/all per model and dedupes by id', () => {
   const now = Date.now();
   const todayStart = new Date(now).setHours(0, 0, 0, 0);
+  const dayMs = 24 * 60 * 60 * 1000;
   const events = [
     { t: todayStart + 1000, id: 'a', model: 'm1', input: 10, output: 20, cacheRead: 5, cacheWrite: 0, cost: 0.5 },
     { t: todayStart + 1000, id: 'a', model: 'm1', input: 10, output: 20, cacheRead: 5, cacheWrite: 0, cost: 0.5 },
     { t: todayStart - 1000, id: 'b', model: 'm1', input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: null },
-    { t: now - 8 * 24 * 60 * 60 * 1000, id: 'c', model: 'm1', input: 100, output: 100, cacheRead: 0, cacheWrite: 0, cost: 9 },
+    { t: now - 8 * dayMs, id: 'c', model: 'm1', input: 100, output: 100, cacheRead: 0, cacheWrite: 0, cost: 9 },
+    { t: now - 45 * dayMs, id: 'd', model: 'm1', input: 1000, output: 1000, cacheRead: 0, cacheWrite: 0, cost: 90 },
   ];
-  const models = aggregateUsageEvents([events], { weekStart: now - 7 * 24 * 60 * 60 * 1000, todayStart });
+  const models = aggregateUsageEvents([events], { now });
   assert.equal(models.length, 1);
   assert.equal(models[0].week.messages, 2); // duplicate id and out-of-window dropped
   assert.equal(models[0].week.input, 11);
   assert.equal(models[0].today.output, 20);
   assert.equal(models[0].week.cost, 0.5); // null cost accumulates nothing
   assert.equal(models[0].week.hasCost, true);
+  assert.equal(models[0].month.messages, 3); // 8-day-old event joins the 30d window
+  assert.equal(models[0].month.cost, 9.5);
+  assert.equal(models[0].all.messages, 4); // 45-day-old event counts all-time only
+  assert.equal(models[0].all.cost, 99.5);
 });
+
+function windowsOf(usage) {
+  return { today: usage, week: usage, month: usage, all: usage };
+}
 
 test('formatModelTable shows ? for models without pricing', () => {
   const usage = { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, messages: 3, cost: 0, hasCost: false };
-  const table = stripBlessedTags(formatModelTable([{ model: 'mystery-model', today: usage, week: usage }]));
+  const table = stripBlessedTags(formatModelTable([{ model: 'mystery-model', ...windowsOf(usage) }]));
   assert.match(table, /mystery-model/);
   assert.match(table, / \? /);
 });
 
 test('local usage tables render in detail mode only', () => {
   const usage = { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, messages: 1, cost: 0.1, hasCost: true };
-  const local = { ok: true, files: 1, models: [{ model: 'gpt-5.6-sol', today: usage, week: usage }] };
+  const local = { ok: true, files: 1, models: [{ model: 'gpt-5.6-sol', ...windowsOf(usage) }] };
   const snapshot = { ok: true, ms: 1, plan: 'plus', items: [], local };
   assert.match(renderSingleAccount(snapshot, 100, 'detail', 'codex', CODEX_LOCAL_OPTS), /Local usage by model/);
   assert.doesNotMatch(renderSingleAccount(snapshot, 100, 'compact', 'codex', CODEX_LOCAL_OPTS), /Local usage by model/);
@@ -58,8 +68,8 @@ test('renderLocalUsage reports scan errors and empty windows', () => {
   assert.match(failed, /no session logs at \/x/);
 
   const empty = stripBlessedTags(renderLocalUsage({ ok: true, files: 2, models: [] }, { source: 'sessions' }));
-  assert.match(empty, /sessions, last 7 days \| 2 files/);
-  assert.match(empty, /no usage recorded/);
+  assert.match(empty, /sessions, today \/ 7d \/ 30d \/ all time \| 2 files/);
+  assert.match(empty, /no local usage recorded/);
 });
 
 // --- codex rollout parsing ------------------------------------------------------
@@ -326,7 +336,7 @@ test('loadLocalModels aggregates assistant messages per provider/model with reco
   insert.run('m1', 's1', now - 1000, now, assistant({ input: 100, output: 50, reasoning: 25, cache: { read: 500, write: 40 } }, 0.02));
   insert.run('m2', 's1', now - 2000, now, assistant({ input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } }, 0.001));
   insert.run('m3', 's1', now - 3000, now, JSON.stringify({ role: 'user' })); // ignored
-  insert.run('m4', 's1', now - 10 * 24 * 60 * 60 * 1000, now, assistant({ input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } }, 9)); // out of window
+  insert.run('m4', 's1', now - 10 * 24 * 60 * 60 * 1000, now, assistant({ input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } }, 9)); // outside 7d
   db.close();
 
   const local = await loadLocalModels(dbPath, now);
@@ -339,4 +349,6 @@ test('loadLocalModels aggregates assistant messages per provider/model with reco
   assert.equal(local.models[0].week.cacheRead, 500);
   assert.equal(local.models[0].week.cacheWrite, 40);
   assert.ok(Math.abs(local.models[0].week.cost - 0.021) < 1e-9);
+  assert.equal(local.models[0].month.messages, 3); // 10-day-old message joins 30d and all
+  assert.ok(Math.abs(local.models[0].all.cost - 9.021) < 1e-9);
 });

@@ -401,32 +401,24 @@ function toClaudeUsage(event) {
   };
 }
 
-// Incremental scanner over ~/.claude/projects/**/*.jsonl transcripts.
+// Incremental scanner over ~/.claude/projects/**/*.jsonl transcripts —
+// recursive, so subagent transcripts (projects/<slug>/<session>/subagents/…)
+// count too.
 export function createTranscriptScanner(configDir) {
   const projectsDir = join(configDir, 'projects');
 
   const listFiles = async () => {
-    let projectNames;
+    let entries;
 
     try {
-      projectNames = await readdir(projectsDir);
+      entries = await readdir(projectsDir, { recursive: true });
     } catch {
       throw new Error(`no transcripts at ${projectsDir}`);
     }
 
-    const paths = [];
-
-    for (const project of projectNames) {
-      const entries = await readdir(join(projectsDir, project)).catch(() => []);
-
-      for (const entry of entries) {
-        if (entry.endsWith('.jsonl')) {
-          paths.push(join(projectsDir, project, entry));
-        }
-      }
-    }
-
-    return paths;
+    return entries
+      .filter((entry) => entry.endsWith('.jsonl'))
+      .map((entry) => join(projectsDir, entry));
   };
 
   return createLocalUsageScanner({
