@@ -74,6 +74,23 @@ test('buildCodexItems maps windows, extras, reviews, credits', () => {
   assert.equal(Math.round(items[4].percent), 75);
 });
 
+test('buildCodexItems labels a single weekly-duration window as Weekly, not Session', () => {
+  const now = Date.now();
+  // Codex dropped the 5h session window; the sole window is now the 7d one.
+  const data = {
+    plan_type: 'plus',
+    rate_limit: {
+      primary_window: { used_percent: 1, limit_window_seconds: 604800, reset_at: Math.floor(now / 1000) + 594032 },
+      secondary_window: null,
+    },
+  };
+  const items = buildCodexItems(data, {}, { now });
+  assert.deepEqual(items.map((item) => item.label), ['Weekly']);
+  assert.equal(items[0].key, 'codex:weekly');
+  // reset ~6.9 days out → treated as a 7-day window, so barely any elapsed
+  assert.ok(items[0].elapsedPercent < 5);
+});
+
 test('buildCodexItems prefers header percents and hides zero credits', () => {
   const items = buildCodexItems(
     { rate_limit: { primary_window: { used_percent: 12 } }, credits: { balance: 0 } },

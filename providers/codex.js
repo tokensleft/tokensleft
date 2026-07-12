@@ -140,6 +140,37 @@ function windowPeriodMs(window, fallbackMs) {
   return typeof window?.limit_window_seconds === 'number' ? window.limit_window_seconds * 1000 : fallbackMs;
 }
 
+// Codex historically returned a 5h "primary" (session) window and a 7d
+// "secondary" (weekly) window, so the two were labeled by position. It has
+// since started returning a single window whose duration is the weekly one —
+// labeling that by position mislabels a weekly limit as "Session". Name each
+// window from its own limit_window_seconds instead, and only fall back to the
+// positional default when the API omits the duration.
+function windowMeta(window, fallback) {
+  const seconds = Number(window?.limit_window_seconds);
+
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return fallback;
+  }
+
+  const periodMs = seconds * 1000;
+  const hours = seconds / 3600;
+
+  if (hours <= 8) {
+    return { key: 'session', label: 'Session', periodMs };
+  }
+
+  if (hours <= 48) {
+    return { key: 'daily', label: 'Daily', periodMs };
+  }
+
+  if (hours <= 24 * 10) {
+    return { key: 'weekly', label: 'Weekly', periodMs };
+  }
+
+  return { key: 'monthly', label: 'Monthly', periodMs };
+}
+
 export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Date.now() } = {}) {
   const items = [];
   const nowSec = Math.floor(now / 1000);
@@ -156,23 +187,25 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
     : typeof secondary?.used_percent === 'number' ? secondary.used_percent : null;
 
   if (primaryPercent !== null) {
+    const meta = windowMeta(primary, { key: 'session', label: 'Session', periodMs: SESSION_PERIOD_MS });
     items.push(buildUsageItem({
-      key: `${prefix}:session`,
-      label: 'Session',
+      key: `${prefix}:${meta.key}`,
+      label: meta.label,
       percent: primaryPercent,
       resetAt: windowResetAt(primary, nowSec),
-      periodMs: windowPeriodMs(primary, SESSION_PERIOD_MS),
+      periodMs: meta.periodMs,
       now,
     }));
   }
 
   if (secondaryPercent !== null) {
+    const meta = windowMeta(secondary, { key: 'weekly', label: 'Weekly', periodMs: WEEKLY_PERIOD_MS });
     items.push(buildUsageItem({
-      key: `${prefix}:weekly`,
-      label: 'Weekly',
+      key: `${prefix}:${meta.key}`,
+      label: meta.label,
       percent: secondaryPercent,
       resetAt: windowResetAt(secondary, nowSec),
-      periodMs: windowPeriodMs(secondary, WEEKLY_PERIOD_MS),
+      periodMs: meta.periodMs,
       now,
     }));
   }
