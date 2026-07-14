@@ -47,26 +47,34 @@ test('429 retry time honors the server delay with a ten-minute minimum backoff',
 });
 
 test('429 UI shows a countdown instead of a misleading time-of-day', () => {
-  const retryAfterAt = new Date(Date.now() + 24 * 60 * 60 * 1000 + 5000);
-  const result = {
-    name: 'personal',
-    ok: false,
-    status: 429,
-    error: 'HTTP 429',
-    plan: 'max',
-    ms: 10,
-    retryAfterAt,
-    items: [],
-  };
-  const compact = stripBlessedTags(renderClaudeSnapshot({ results: [result] }, 100, 'compact'));
-  const detail = stripBlessedTags(renderClaudeSnapshot({
-    results: [result],
-    local: { ok: true, models: [] },
-  }, 100, 'detail'));
+  const now = Date.parse('2026-07-14T06:00:00Z');
+  const realNow = Date.now;
+  Date.now = () => now;
 
-  assert.match(compact, /retry in 1d/);
-  assert.ok(!compact.includes('retry after'));
-  assert.match(detail, /retry in 1d · at /);
+  try {
+    const retryAfterAt = new Date(now + 24 * 60 * 60 * 1000);
+    const result = {
+      name: 'personal',
+      ok: false,
+      status: 429,
+      error: 'HTTP 429',
+      plan: 'max',
+      ms: 10,
+      retryAfterAt,
+      items: [],
+    };
+    const compact = stripBlessedTags(renderClaudeSnapshot({ results: [result] }, 100, 'compact'));
+    const detail = stripBlessedTags(renderClaudeSnapshot({
+      results: [result],
+      local: { ok: true, models: [] },
+    }, 100, 'detail'));
+
+    assert.match(compact, /retry in 1d/);
+    assert.ok(!compact.includes('retry after'));
+    assert.match(detail, /retry in 1d · at /);
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 function transcriptLine({ id, model = 'claude-fable-5', t, output = 100 }) {
