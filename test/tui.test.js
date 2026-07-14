@@ -1,20 +1,35 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import blessed from 'blessed';
 import { stripBlessedTags } from '../lib/format.js';
 import {
   applyRoundedCorners,
   dashboardGeometry,
   dashboardLabel,
+  DEFAULT_TERMINAL_PROFILE,
   DASHBOARD_SUBTITLE,
   formatFooter,
   rainbowTitle,
   terminalProfile,
 } from '../lib/tui.js';
 
-test('terminalProfile enables 256 colors in Windows Terminal', () => {
-  assert.equal(terminalProfile({ WT_SESSION: 'session-id' }), 'xterm-256color');
-  assert.equal(terminalProfile({ TERM: 'screen-256color', WT_SESSION: 'session-id' }), 'screen-256color');
-  assert.equal(terminalProfile({}), undefined);
+test('terminalProfile defaults every detected terminal to the 256-color profile', () => {
+  assert.equal(DEFAULT_TERMINAL_PROFILE, 'xterm-256color');
+  assert.equal(terminalProfile({}), DEFAULT_TERMINAL_PROFILE);
+  assert.equal(terminalProfile({ WT_SESSION: 'session-id' }), DEFAULT_TERMINAL_PROFILE);
+  assert.equal(terminalProfile({ TERM: 'xterm' }), DEFAULT_TERMINAL_PROFILE);
+  assert.equal(terminalProfile({ TERM: 'linux' }), DEFAULT_TERMINAL_PROFILE);
+  assert.equal(terminalProfile({ TERM: 'screen-256color' }), DEFAULT_TERMINAL_PROFILE);
+});
+
+test('terminalProfile supports an explicit compatibility override', () => {
+  assert.equal(terminalProfile({ TERM: 'xterm', TOKENSLEFT_TERM: 'xterm' }), 'xterm');
+  assert.equal(terminalProfile({ TOKENSLEFT_TERM: 'linux' }), 'linux');
+});
+
+test('normalized xterm profiles give Blessed the full palette', () => {
+  const profile = terminalProfile({ TERM: 'xterm' });
+  assert.equal(blessed.tput({ terminal: profile }).colors, 256);
 });
 
 test('dashboardGeometry centers a readable-width shell on wide terminals', () => {
