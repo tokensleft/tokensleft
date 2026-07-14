@@ -65,6 +65,22 @@ export function getPlanName(subscription) {
   return subscription?.data?.productName || subscription?.productName || '';
 }
 
+// Keep proxy credentials out of snapshots, TUI output, and --json. Only the
+// scheme and network address are useful diagnostics; paths, query strings,
+// and userinfo can all contain secrets.
+export function displayProxy(proxy) {
+  if (!proxy) {
+    return 'direct';
+  }
+
+  try {
+    const parsed = new URL(proxy);
+    return parsed.host ? `${parsed.protocol}//${parsed.host}` : 'configured proxy';
+  } catch {
+    return 'configured proxy';
+  }
+}
+
 export function findLimit(limits, type, unit) {
   let fallback = null;
 
@@ -165,20 +181,24 @@ async function fetchAccountUsage(account) {
     fetchJsonResult(SUBSCRIPTION_URL, options),
     fetchJsonResult(QUOTA_URL, options),
   ]);
-  const ok = quota.ok || subscription.ok;
-  const firstError = [quota, subscription].find((result) => !result.ok);
+  // Quota is the provider's primary payload. A working subscription endpoint
+  // must not make a failed quota request look healthy; subscription metadata
+  // is optional and may be reported as partial when quota itself succeeded.
+  const ok = quota.ok;
+  const quotaError = quota.ok ? null : quota;
+  const subscriptionError = subscription.ok ? null : subscription;
 
   return {
-    account: { name: account.name, key: maskKey(account.key), proxy: account.proxy || 'direct' },
+    account: { name: account.name, key: maskKey(account.key), proxy: displayProxy(account.proxy) },
     ok,
     ms: Date.now() - startedAt,
     plan: subscription.ok ? getPlanName(subscription.data) : '',
     items: quota.ok ? buildZaiItems(quota.data, { prefix: account.name }) : [],
-    status: ok ? 'OK' : firstError?.status || 'ERR',
-    error: ok ? '' : firstError?.error || 'request failed',
-    body: ok ? '' : firstError?.body?.slice(0, 500) || '',
-    url: ok ? '' : firstError?.url || '',
-    partial: ok && firstError ? String(firstError.status) : '',
+    status: ok ? 'OK' : quotaError?.status || 'ERR',
+    error: ok ? '' : quotaError?.error || 'quota request failed',
+    body: ok ? '' : quotaError?.body?.slice(0, 500) || '',
+    url: ok ? '' : quotaError?.url || '',
+    partial: ok && subscriptionError ? `subscription ${subscriptionError.status || 'ERR'}` : '',
     quotaSample: quota.ok && buildZaiItems(quota.data).every((item) => item.kind === 'empty')
       ? jsonPreview(quota.data)
       : '',

@@ -7,7 +7,7 @@ import { escapeBlessed } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
-import { renderSingleAccount } from './codex.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 
 const TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
 const LOAD_CODE_ASSIST_URL = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
@@ -102,7 +102,9 @@ export function credsNeedRefresh(creds, now = Date.now()) {
   return now + TOKEN_REFRESH_BUFFER_MS >= expiryMs;
 }
 
-async function refreshCreds(credsPath, creds) {
+async function refreshCreds(credsPath, credentialState) {
+  const { creds } = credentialState;
+
   if (!creds.refresh_token) {
     return null;
   }
@@ -151,7 +153,15 @@ async function refreshCreds(credsPath, creds) {
     creds.expiry_date = Date.now() + body.expires_in * 1000;
   }
 
-  await writeFileAtomic(credsPath, JSON.stringify(creds, null, 2)).catch(() => {});
+  const serialized = JSON.stringify(creds, null, 2);
+
+  try {
+    await writeFileAtomic(credsPath, serialized, { expectedContent: credentialState.raw });
+  } catch (error) {
+    throw new Error(`OAuth token refreshed but could not safely update Gemini credentials: ${error.message}`);
+  }
+
+  credentialState.raw = serialized;
   return creds.access_token;
 }
 
@@ -489,7 +499,7 @@ export const GEMINI_LOCAL_OPTS = {
   tone: (model) => /pro/.test(model) ? 'magenta' : 'white',
 };
 
-async function fetchGeminiQuota(dir, credsPath) {
+async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
   const startedAt = Date.now();
   const authType = await loadSettingsAuthType(dir);
 
@@ -497,17 +507,25 @@ async function fetchGeminiQuota(dir, credsPath) {
     return { ok: false, status: 'AUTH', error: `Gemini auth type "${authType}" is not supported (oauth-personal only).`, ms: Date.now() - startedAt, items: [] };
   }
 
-  const creds = parseJson(await readFile(credsPath, 'utf8').catch(() => ''));
+  const raw = await readFile(credsPath, 'utf8').catch(() => '');
+  const creds = parseJson(raw);
 
   if (!creds?.access_token && !creds?.refresh_token) {
     return { ok: false, status: 'CRED', error: 'Not logged in. Run `gemini` and sign in.', ms: Date.now() - startedAt, items: [] };
   }
 
+  const credentialState = { raw, creds };
   let token = creds.access_token;
+  const expiry = Number(creds.expiry_date);
+  const expiryMs = expiry > 10_000_000_000 ? expiry : expiry * 1000;
 
-  if (credsNeedRefresh(creds)) {
+  if (readOnly && (!token || (Number.isFinite(expiryMs) && expiryMs <= Date.now()))) {
+    return { ok: false, status: 'EXPIRED', error: 'Gemini OAuth token expired or unavailable in read-only mode. Run `gemini` and sign in again.', ms: Date.now() - startedAt, items: [] };
+  }
+
+  if (!readOnly && credsNeedRefresh(creds)) {
     try {
-      const refreshed = await refreshCreds(credsPath, creds);
+      const refreshed = await refreshCreds(credsPath, credentialState);
 
       if (refreshed) {
         token = refreshed;
@@ -522,8 +540,8 @@ async function fetchGeminiQuota(dir, credsPath) {
   const callWithRetry = async (makeRequest) => {
     let response = await makeRequest(token);
 
-    if (response.status === 401 || response.status === 403) {
-      const refreshed = await refreshCreds(credsPath, creds);
+    if (!readOnly && (response.status === 401 || response.status === 403)) {
+      const refreshed = await refreshCreds(credsPath, credentialState);
 
       if (refreshed) {
         token = refreshed;
@@ -588,6 +606,7 @@ export async function createGeminiProvider(env) {
   }
 
   const scanner = createChatScanner(dir);
+  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 
   return {
     id: 'gemini',
@@ -597,7 +616,7 @@ export async function createGeminiProvider(env) {
     async fetch() {
       const [local, snapshot] = await Promise.all([
         scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
-        fetchGeminiQuota(dir, credsPath),
+        fetchGeminiQuota(dir, credsPath, readOnly),
       ]);
       snapshot.local = local;
       return snapshot;

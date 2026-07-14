@@ -5,7 +5,7 @@ import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
 import { aggregateUsageEvents } from '../lib/local-usage.js';
-import { renderSingleAccount } from './codex.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 
 // OpenCode's "Go" plan has no usage API; the CLI stores per-session cost in a
 // local SQLite DB, and the plan limits are fixed dollar amounts.
@@ -183,12 +183,17 @@ export function buildOpencodeItems(rows, { prefix = 'opencode', now = Date.now()
   }));
 }
 
+export function hasOpencodeGoAuth(auth) {
+  const key = auth?.['opencode-go']?.key;
+  return typeof key === 'string' && key.trim().length > 0;
+}
+
 export async function createOpencodeProvider(env) {
   const dataDir = opencodeDataDir(env);
   const authPath = join(dataDir, 'auth.json');
   const dbPath = join(dataDir, 'opencode.db');
   const auth = parseJson(await readFile(authPath, 'utf8').catch(() => ''));
-  const hasGoAuth = typeof auth?.['opencode-go']?.key === 'string';
+  const hasGoAuth = hasOpencodeGoAuth(auth);
   const hasDb = await access(dbPath).then(() => true, () => false);
 
   if (!hasGoAuth && !hasDb) {
@@ -209,6 +214,22 @@ export async function createOpencodeProvider(env) {
 
       const local = await loadLocalModels(dbPath, Date.now())
         .catch((error) => ({ ok: false, error: `cannot read opencode.db: ${error.message}`, models: [] }));
+
+      // A database can exist for any OpenCode provider. Fixed Go plan limits
+      // are meaningful only when opencode-go auth is present; DB-only installs
+      // still get their local per-model usage table without invented quotas.
+      if (!hasGoAuth) {
+        return {
+          ok: local.ok,
+          status: local.ok ? 'OK' : 'DB',
+          error: local.ok ? '' : local.error,
+          ms: Date.now() - startedAt,
+          plan: '',
+          items: [],
+          local,
+        };
+      }
+
       let rows;
 
       try {

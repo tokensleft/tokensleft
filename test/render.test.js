@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { stripBlessedTags } from '../lib/format.js';
+import { cellWidth, stripBlessedTags } from '../lib/format.js';
 import { COLOR } from '../lib/palette.js';
-import { formatUsageItem, formatUsageItemCompact, solidProgressBar, usageTone } from '../lib/render.js';
+import {
+  barWidthFor,
+  compactBarWidthFor,
+  formatUsageItem,
+  formatUsageItemCompact,
+  labelWidthFor,
+  solidProgressBar,
+  usageTone,
+} from '../lib/render.js';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -74,6 +82,17 @@ test('compact item renders one line with percent, pace, projection, reset', () =
   assert.ok(!line.includes('dry'), 'no dry warning without depletesAt');
 });
 
+test('labels that exactly fill their column are not truncated', () => {
+  const exact = item({ label: 'Gemini Flash' });
+  const compact = stripBlessedTags(formatUsageItemCompact(exact, 100));
+  const detail = stripBlessedTags(formatUsageItem(exact, 100));
+
+  assert.match(compact, /Gemini Flash/);
+  assert.match(detail, /Gemini Flash/);
+  assert.ok(!compact.includes('…'));
+  assert.ok(!detail.includes('…'));
+});
+
 test('soon-reset countdown uses a stable single-cell clock symbol', () => {
   const soon = item({ resetAt: new Date(Date.now() + HOUR / 2) });
   const compact = stripBlessedTags(formatUsageItemCompact(soon, 100));
@@ -105,9 +124,18 @@ test('compact item drops lower-priority metadata instead of clipping at narrow w
     depletesAt: new Date(Date.now() + HOUR / 2),
   }), width));
 
-  assert.ok(line.length <= width, `${line.length} columns exceeds ${width}`);
-  assert.match(line, /Very long q…/, 'long labels are truncated without shifting the columns');
+  assert.ok(cellWidth(line) <= width, `${cellWidth(line)} columns exceeds ${width}`);
+  assert.match(line, /Very long quo…/, 'long labels use the wider responsive label column');
   assert.match(line, /⚠ dry/, 'the critical warning has priority over reset metadata');
+});
+
+test('label and progress bar widths expand with available space', () => {
+  assert.equal(labelWidthFor(64, 'compact'), 12);
+  assert.equal(labelWidthFor(74, 'compact'), 14);
+  assert.equal(labelWidthFor(100, 'compact'), 20);
+  assert.ok(labelWidthFor(120, 'detail') > labelWidthFor(74, 'detail'));
+  assert.ok(compactBarWidthFor(100) > compactBarWidthFor(64));
+  assert.ok(barWidthFor(120) > barWidthFor(74));
 });
 
 test('an exhausted quota shows a static warning, not a ticking dry time', () => {
@@ -202,6 +230,32 @@ test('info items fold the note into compact and list details in detail', () => {
   assert.ok(!lines[0].includes('next expires'), 'detail header omits the folded note');
   assert.match(lines[1], /expires 3d 14h \(Jul 18, 2026\)/);
   assert.match(lines[2], /expires 12d \(Jul 27, 2026\)/);
+});
+
+test('info items highlight an expiry inside one hour', () => {
+  const info = {
+    kind: 'info',
+    key: 'codex:resets',
+    label: 'Resets',
+    value: '5 available',
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+    note: 'next expires 30m 0s',
+    details: ['expires 30m 0s (Jul 14, 2026)', 'expires 12d (Jul 27, 2026)'],
+  };
+
+  const compactRaw = formatUsageItemCompact(info, 100);
+  const compact = stripBlessedTags(compactRaw);
+  assert.match(compact, /5 available · ⚠ next expires 30m 0s/);
+  assert.ok(compactRaw.includes(`{${COLOR.warning}-fg}{bold}`));
+  assert.ok(compactRaw.includes(`{${COLOR.secondary}-fg}5 available{/${COLOR.secondary}-fg}`));
+  assert.ok(!compactRaw.includes(`{${COLOR.warning}-fg}{bold}5 available`));
+
+  const detailRaw = formatUsageItem(info, 96);
+  const detail = stripBlessedTags(detailRaw).split('\n');
+  assert.match(detail[1], /⚠ expires 30m 0s/);
+  assert.ok(detailRaw.includes(`{${COLOR.warning}-fg}{bold}`));
+  assert.ok(detailRaw.includes(`{${COLOR.secondary}-fg}5 available{/${COLOR.secondary}-fg}`));
+  assert.ok(!detail[2].includes('⚠'), 'only the imminent expiry is highlighted');
 });
 
 test('detailed item renders multi-line with bar and pace meta', () => {

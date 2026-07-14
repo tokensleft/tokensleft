@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PROVIDERS, parseArgs, usage } from '../lib/cli.js';
+import {
+  formatPlainProviderBlock,
+  plainOutputWidth,
+  PROVIDERS,
+  parseArgs,
+  providerEnvironment,
+  runCli,
+  usage,
+  VERSION,
+} from '../lib/cli.js';
 
 const EXPECTED_IDS = ['claude', 'codex', 'gemini', 'copilot', 'grok', 'antigravity', 'opencode', 'zai'];
 
@@ -40,10 +49,55 @@ test('parseArgs recognizes help', () => {
   assert.equal(parseArgs(['--help']).help, true);
 });
 
+test('parseArgs recognizes version and read-only mode', () => {
+  assert.equal(parseArgs(['-v']).version, true);
+  assert.equal(parseArgs(['--version']).version, true);
+  assert.equal(parseArgs(['--read-only']).readOnly, true);
+  assert.deepEqual(
+    providerEnvironment({ TOKEN: 'value' }, true),
+    { TOKEN: 'value', TOKENSLEFT_READ_ONLY: '1' },
+  );
+});
+
+test('plain output width prefers terminal columns then COLUMNS', () => {
+  assert.equal(plainOutputWidth({ columns: 88 }, { COLUMNS: '55' }), 88);
+  assert.equal(plainOutputWidth({}, { COLUMNS: '55' }), 55);
+  assert.equal(plainOutputWidth({}, {}), 96);
+  assert.equal(plainOutputWidth({ columns: 999 }, {}), 160);
+});
+
+test('--version prints the installed package version without loading providers', async () => {
+  const output = [];
+  const realLog = console.log;
+  console.log = (value) => output.push(String(value));
+
+  try {
+    await runCli(['--version']);
+  } finally {
+    console.log = realLog;
+  }
+
+  assert.deepEqual(output, [VERSION]);
+});
+
+test('--once formatting strips terminal controls and Blessed tags at the final output sink', () => {
+  const provider = {
+    title: `Unsafe\x1b]0;owned\x07\u202E title`,
+    render: () => '{red-fg}safe{/red-fg} \x1b[31mowned\x1b[0m',
+  };
+  const output = formatPlainProviderBlock(provider, {}, 80, true);
+
+  assert.doesNotMatch(output, /\x1b|\x07|\u202E|\{\/?red-fg\}/);
+  assert.match(output, /safe owned/);
+});
+
 test('usage lists every provider id', () => {
   const text = usage();
 
   for (const id of EXPECTED_IDS) {
     assert.ok(text.includes(id), `usage mentions ${id}`);
   }
+
+  assert.match(text, /--read-only/);
+  assert.match(text, /--version/);
 });

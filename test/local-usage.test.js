@@ -3,12 +3,18 @@ import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { aggregateUsageEvents, formatModelTable, renderLocalUsage } from '../lib/local-usage.js';
+import {
+  aggregateUsageEvents,
+  createLocalUsageScanner,
+  formatModelTable,
+  renderLocalUsage,
+} from '../lib/local-usage.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 import { renderClaudeSnapshot } from '../providers/claude.js';
-import { CODEX_LOCAL_OPTS, createRolloutScanner, parseRolloutChunk, renderSingleAccount } from '../providers/codex.js';
+import { CODEX_LOCAL_OPTS, createRolloutScanner, parseRolloutChunk } from '../providers/codex.js';
 import { createChatScanner, parseChatJsonlChunk, parseChatMessages } from '../providers/gemini.js';
 import { loadLocalModels } from '../providers/opencode.js';
-import { stripBlessedTags } from '../lib/format.js';
+import { cellWidth, stripBlessedTags } from '../lib/format.js';
 
 // --- shared aggregation -------------------------------------------------------
 
@@ -30,6 +36,7 @@ test('aggregateUsageEvents buckets today/7d/30d/all per model and dedupes by id'
   assert.equal(models[0].today.output, 20);
   assert.equal(models[0].week.cost, 0.5); // null cost accumulates nothing
   assert.equal(models[0].week.hasCost, true);
+  assert.equal(models[0].week.hasUnknownCost, true);
   assert.equal(models[0].month.messages, 3); // 8-day-old event joins the 30d window
   assert.equal(models[0].month.cost, 9.5);
   assert.equal(models[0].all.messages, 4); // 45-day-old event counts all-time only
@@ -45,6 +52,60 @@ test('formatModelTable shows ? for models without pricing', () => {
   const table = stripBlessedTags(formatModelTable([{ model: 'mystery-model', ...windowsOf(usage) }]));
   assert.match(table, /mystery-model/);
   assert.match(table, / \? /);
+  assert.match(table, /\$0\.00\+\?/);
+  assert.match(table, /partial total/);
+});
+
+test('formatModelTable adapts windows and model width to the available cells', () => {
+  const usage = { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, messages: 1, cost: 0.1, hasCost: true };
+  const model = 'provider/very-long-model-name-version-preview';
+  const narrow = stripBlessedTags(formatModelTable([{ model, ...windowsOf(usage) }], { width: 64 }));
+  const wide = stripBlessedTags(formatModelTable([{ model, ...windowsOf(usage) }], { width: 120 }));
+
+  assert.ok(narrow.split('\n').every((line) => cellWidth(line) <= 64));
+  assert.doesNotMatch(narrow.split('\n')[0], /7d out|30d out/);
+  assert.match(wide, /provider\/very-long-model-name/);
+  assert.ok(wide.split('\n').every((line) => cellWidth(line) <= 120));
+});
+
+test('mixed known and unknown prices mark row and totals as partial', () => {
+  const known = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, messages: 1, cost: 1, hasCost: true, hasUnknownCost: false };
+  const mixed = { ...known, cost: 1, hasUnknownCost: true };
+  const table = stripBlessedTags(formatModelTable([{ model: 'mixed-model', ...windowsOf(mixed) }]));
+
+  assert.match(table, /\$1\.00\+\?/);
+  assert.match(table, /\+\? partial total/);
+});
+
+test('scanner keeps last-known-good data when one file refresh fails', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tokensleft-local-partial-'));
+  after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = join(dir, 'usage.jsonl');
+  await writeFile(filePath, '{}\n');
+  let shouldFail = false;
+  const scanner = createLocalUsageScanner({
+    listFiles: async () => [filePath],
+    refreshFile: async (_path, info, cached) => {
+      if (shouldFail) {
+        cached.events.push({ t: Date.now(), model: 'bad', output: 999, cost: 99 });
+        throw new Error('temporary read failure');
+      }
+
+      cached.events.push({ t: Date.now(), model: 'good', output: 7, cost: 0.1 });
+      cached.offset = info.size;
+    },
+  });
+
+  const first = await scanner.scan();
+  shouldFail = true;
+  const second = await scanner.scan();
+
+  assert.equal(first.models[0].all.output, 7);
+  assert.equal(second.partial, true);
+  assert.equal(second.failedFiles.length, 1);
+  assert.deepEqual(second.models.map((entry) => entry.model), ['good']);
+  assert.equal(second.models[0].all.output, 7);
+  assert.match(stripBlessedTags(renderLocalUsage(second)), /partial · 1 file could not be refreshed/);
 });
 
 test('local usage tables render in detail mode only', () => {

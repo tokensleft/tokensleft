@@ -5,7 +5,7 @@ import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { formatNumber } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from './codex.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 
 const BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing';
 const SETTINGS_URL = 'https://cli-chat-proxy.grok.com/v1/settings';

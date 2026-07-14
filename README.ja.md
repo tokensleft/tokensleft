@@ -1,10 +1,12 @@
-# tokensleft
+# TokensLeft
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md)
 
-トークンはあとどれくらい残ってる?AI サブスクリプションのクォータをターミナル 1 画面で — Claude Code(Anthropic)、Codex(OpenAI)、Gemini CLI、GitHub Copilot、Grok CLI、Antigravity、OpenCode、z.ai。バーンレート予測、しきい値アラート、認証情報の自動検出 + OAuth トークン自動リフレッシュ、さらに Claude Code(Fable 含む)、Codex、Gemini CLI、OpenCode のローカル・モデル別トークン/コスト集計を搭載。
+AI サブスクリプションの上限、リセット時刻、消費ペース、ローカルのモデル使用量を確認できる高速なターミナルダッシュボードです。
 
-![tokensleft ダッシュボード — 検出された各プロバイダのクォータバー、ペース予測、モデル別コスト表](https://cdn.jsdelivr.net/gh/tokensleft/tokensleft@main/docs/screenshot.png)
+![TokensLeft コンパクト表示](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot.png)
+
+![TokensLeft Codex 詳細表示](https://raw.githubusercontent.com/tokensleft/tokensleft/main/docs/screenshot2.png)
 
 ## クイックスタート
 
@@ -12,101 +14,47 @@
 npx tokensleft
 ```
 
-これだけ。ログイン済みの CLI は自動検出され、認証情報のないプロバイダは表示されません。
+ログイン済みの Claude Code、Codex、Gemini CLI、GitHub Copilot、Grok、Antigravity、OpenCode、z.ai を自動検出します。Node.js 22.13 以降が必要です。
 
-| コマンド | 表示内容 |
-|---|---|
-| `npx tokensleft` | 検出された全プロバイダを 1 つの TUI に |
-| `npx tokensleft claude` | Claude Code のレート制限(Session / Weekly / モデル別 例: Fable)+ ローカルのトークン & コスト表 |
-| `npx tokensleft codex` | Codex(ChatGPT プラン)の session/weekly/モデル制限、reviews、credits + ローカルのトークン & コスト表 |
-| `npx tokensleft gemini` | Gemini CLI の Pro/Flash 日次クォータ + ローカルのトークン & コスト表 |
-| `npx tokensleft copilot` | GitHub Copilot の premium/chat クォータ(無料プラン: chat/completions) |
-| `npx tokensleft grok` | Grok CLI の月間クレジット + 従量課金上限 |
-| `npx tokensleft antigravity` | Antigravity のモデルプール別クォータ(Gemini Pro / Flash / Claude) |
-| `npx tokensleft opencode` | OpenCode Go プランの支出 vs session/週/月のドル上限 + ローカルのモデル別表 |
-| `npx tokensleft zai` | z.ai アカウントのクォータ |
-| `npx tokensleft claude codex` | プロバイダの任意の組み合わせ |
-| `npx tokensleft --demo` | ランダム生成のリアルなダミーデータ — スクリーンショット用 |
+## コマンド
 
-### オプション
+```text
+tokensleft [providers...] [options]
 
-- `--demo` — リアルなランダムデータ。認証情報には一切触れず、ネットワーク通信もしません。値は起動時に一度だけ決まり、TUI のリフレッシュでも安定したまま、リセットのカウントダウンだけが進みます。
-- `--once` — プレーンテキストのスナップショットを 1 回出力して終了(パイプ時は自動で有効)
-- `--json` — 機械可読な JSON を出力して終了
-- `--interval <秒>` — リフレッシュ間隔を上書き
-- `-h, --help` — 使い方
+--demo            ローカルのデモデータで実行
+--once            プレーンテキストを一度出力して終了
+--json            JSON を一度出力して終了
+--interval <秒>   更新間隔を変更
+--read-only       認証情報を更新・永続保存しない
+-h, --help        ヘルプを表示
+-v, --version     インストール済みバージョンを表示
+```
 
-Node.js ≥ 22.13 が必要です。
+`tokensleft claude codex` のように任意の組み合わせを指定できます。未指定の場合は、検出された Provider をすべて表示します。
 
-## キー:自動検出 + 手動設定
+## TUI キー
 
-対応する CLI/アプリにログイン済みなら、どのプロバイダも設定ゼロで動きます。手動のキーは `~/.tokensleft/.env`(どのディレクトリからでも読める — `npx` 向き)または `./.env`(カレントディレクトリ、競合時はこちらが優先)に置きます。[.env.example](.env.example) を参照。
+`r` すべて更新 · `1`–`9` 個別更新 · `d` 詳細表示 · `?` ヘルプ · 矢印/PgUp/PgDn/マウスでスクロール · `q`/Esc 終了
 
-| プロバイダ | 自動(システム) | 手動(.env) | トークンリフレッシュ |
-|---|---|---|---|
-| Claude Code | `~/.claude/.credentials.json` をリフレッシュごとに再読込 | `CLAUDE_TOKEN_1..N`、`CLAUDE_CODE_OAUTH_TOKEN` | ✅ 期限の約 5 分前に refresh token で更新し書き戻し |
-| Codex | `~/.codex/auth.json`(または `CODEX_HOME`) | — | ✅ 8 日超過または 401 時に自動更新 |
-| Gemini | `~/.gemini/oauth_creds.json` | — | ✅ 期限の約 5 分前に更新(クライアント認証情報はローカルの CLI から読み取り、公開値にフォールバック) |
-| Copilot | Copilot の `apps.json`/`hosts.json`、gh CLI の `hosts.yml` | `COPILOT_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` | リフレッシュごとにディスクから再解決 |
-| Grok | `~/.grok/auth.json`(最初の未失効キー) | `GROK_TOKEN` | 対象外(grok login のみ) |
-| Antigravity | `state.vscdb` の OAuth エンベロープ(protobuf、SQLite) | — | ✅ Google OAuth リフレッシュ、`~/.tokensleft` にキャッシュ |
-| OpenCode | `~/.local/share/opencode` の認証 + ローカル `opencode.db` の支出 | — | 対象外(ローカル集計) |
-| z.ai | `api.z.ai` を指す Claude Code プロファイル(`settings*.json`) | `ZAI_KEY_1..N` / `ZAI_API_KEY` / CSV | 対象外(静的キー) |
+既定は 256 色です。制限のある端末では `TOKENSLEFT_COLOR=basic` または `NO_COLOR=1` を設定してください。
 
-自動検出されたキーは手動設定と重複排除されます。リフレッシュされた OAuth トークンは、各 CLI 自身の認証ファイルへ同じ形式でアトミックに書き戻されます(ベンダー CLI と同じ挙動)— refresh token が有効な限り、ダッシュボードに `EXPIRED` は出ません。
+## 認証情報とプライバシー
 
-## TUI のキー操作
+- 既存 CLI のログイン情報をローカルで検出します。手動キーは `~/.tokensleft/.env` または `./.env` に保存できます。詳細は [.env.example](.env.example) を参照してください。
+- 上限リクエストは TokensLeft のサービスを経由せず、各 Provider へ直接、または設定済み proxy 経由で送信されます。TokensLeft のアカウント、サーバー、分析、テレメトリーはありません。
+- ローカル使用量は端末内の CLI ログだけから計算され、アップロードされません。
+- OAuth 認証情報は必要時に安全に更新・保存されます。`--read-only` で更新と永続的な認証情報の変更を無効化できます。
 
-`r` 全体リフレッシュ · `1`-`9` 個別リフレッシュ · `d` 詳細表示(ローカルのモデル別使用量テーブルを追加表示) · `q`/`Esc` 終了 · 矢印キー/PgUp/PgDn/マウスでスクロール。
-
-## 数字の仕組み
-
-予測はあえてシンプルに 1 つだけ:現在ウィンドウの線形外挿です。ウィンドウの `e%` が経過した時点でクォータを `u%` 使っていれば、リセット時には `u/e·100%` に到達するペース。答える問いはただ 1 つ — クォータはリセットまで持つか?
-
-- 実線の `█` は**使用済み量**、薄い `░` の尾は**現在のペースでリセット時に到達する位置**まで伸びます。尾の色は予測の着地点で決まり、赤い尾は赤ゾーンへ向かっているサイン。
-- `→n%` は同じ数字のテキスト表示。`✓ pace` / `▲+n%` は使用% と経過% の比較です。
-- 線形ペースがリセット**前**に 100% を超える場合、`⚠ dry in X` と到達時刻が表示されます。
-- 80% / 90% を超えるとターミナルベルが鳴り、ヘッダーに赤いアラートが出ます。
-
-## ローカル使用量テーブル(`d` キー)
-
-クォータバーが示すのはパーセント、ローカルテーブルが示すのはその中身です。`d`(詳細表示 — `--once` が出力する内容と同じ)を押すと、今日 / 7 日 / 30 日 / 全期間(全期間 = ディスクに残っているログすべて)のモデル別内訳が表示されます。各 CLI 自身がディスクに残すログからの集計で、初回スキャンは全履歴を読み、以降は追記分のみ。データがマシンの外に出ることはありません:
-
-| プロバイダ | ソース | 備考 |
-|---|---|---|
-| Claude Code | `~/.claude/projects/**/*.jsonl` のトランスクリプト | input/output/cache-read/cache-write を分けて集計、メッセージ id で重複排除 |
-| Codex | `~/.codex/{sessions,archived_sessions}/**/rollout-*.jsonl` | セッション累計値から差分を取るため、重複イベントやフォーク/再開されたセッションも二重計上しない |
-| Gemini CLI | `~/.gemini/tmp/*/chats/*` のセッションチェックポイント(.json と .jsonl) | thought トークンは output、ツールプロンプトは input として計上 |
-| OpenCode | `opencode.db`(SQLite、読み取り専用) | プロバイダ/モデル別。`$` は OpenCode 自身がメッセージごとに記録したコスト |
-
-Claude Code、Codex、Gemini の `$` 列は公開 API 価格ベースの推定です(キャッシュの読み書きは割引価格で計算)— サブスクリプションの使用量は前払いなので、課金額ではなくスケール感の参考です。価格が公開されていないモデルは `?` と表示されます。
-
-## Claude Code 固有の仕様
-
-- **自動(システム)キー**:**リフレッシュごとに** `~/.claude/.credentials.json`(または `CLAUDE_CONFIG_DIR`)から再読込。期限切れトークンは保存済み refresh token で更新して書き戻すため(minified JSON、アトミック)、ローテーション後も Claude Code はそのまま動き続けます。
-- **手動キー**:`.env` の `CLAUDE_TOKEN_1..N`(+ `CLAUDE_NAME_1..N`)または `CLAUDE_CODE_OAUTH_TOKEN` — 追加アカウントや Claude Code 未導入マシン用。システムトークンと重複するものはスキップ。
-- **レート制限**は Anthropic の OAuth usage エンドポイント由来:5 時間セッション、週間全モデル、モデル別週間スコープ(例: Fable)、有効時は extra-usage/spend も。
-- **ローカル使用量テーブル**(詳細表示、`d`)はトランスクリプトをモデル別トークンと推定コストに集計 — [ローカル使用量テーブル](#ローカル使用量テーブルd-キー) を参照。
+ローカルのドル金額は公開 API 価格による推定で、サブスクリプション請求額ではありません。不明または一部のみの価格は明示されます。予測は単純な線形推定であり、保証ではありません。
 
 ## 開発
 
 ```sh
-git clone <repo> && cd tokensleft
-npm install
-npm start              # = node bin/tokensleft.js
-npm start -- claude    # 単一プロバイダ
-npm run demo           # ダミーデータのダッシュボード
-npm test               # ユニットテスト(node --test)
+git clone https://github.com/tokensleft/tokensleft.git
+cd tokensleft
+npm ci
+npm test
+npm run demo
 ```
 
-```
-bin/       tokensleft CLI エントリ(npx tokensleft [providers...] [options])
-lib/       共有:dotenv、フォーマット、予測(線形)、バー/ブロック、http、
-           claude-settings 検出、アトミック書き込み、blessed シェル、CLI、demo データ
-providers/ claude / codex / gemini / copilot / grok / antigravity / opencode / zai
-test/      node --test スイート
-```
-
-Antigravity と OpenCode は Node 組み込みの `node:sqlite` でローカル SQLite を読みます(ネイティブ依存なし)。
-
-`.env` は git-ignore 済み。本物のキーは絶対にコミットしないでください。
+[セキュリティポリシー](SECURITY.md) · MIT ライセンス。

@@ -1,11 +1,11 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { configPath } from '../lib/fsx.js';
+import { configPath, writeFileAtomic } from '../lib/fsx.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from './codex.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 
 const CLOUD_CODE_URLS = [
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
@@ -165,9 +165,24 @@ async function readStateDbValue(dbPath) {
     return query(dbPath);
   } catch {
     // DB may be locked by a running Antigravity — retry against a copy.
-    const copyPath = join(tmpdir(), `tokensleft-antigravity-${process.pid}.vscdb`);
-    await writeFile(copyPath, await readFile(dbPath));
-    return query(copyPath);
+    const tempDir = await mkdtemp(join(tmpdir(), 'tokensleft-antigravity-'));
+    const copyPath = join(tempDir, 'state.vscdb');
+
+    try {
+      if (platform() !== 'win32') {
+        await chmod(tempDir, 0o700);
+      }
+
+      await writeFile(copyPath, await readFile(dbPath), { flag: 'wx', mode: 0o600 });
+
+      if (platform() !== 'win32') {
+        await chmod(copyPath, 0o600);
+      }
+
+      return query(copyPath);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -184,11 +199,17 @@ async function loadCachedToken() {
 }
 
 async function cacheToken(accessToken, expiresInSeconds) {
-  await mkdir(configPath(), { recursive: true }).catch(() => {});
-  await writeFile(REFRESH_CACHE_PATH, JSON.stringify({
+  const dir = configPath();
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+
+  if (platform() !== 'win32') {
+    await chmod(dir, 0o700);
+  }
+
+  await writeFileAtomic(REFRESH_CACHE_PATH, JSON.stringify({
     accessToken,
     expiresAtMs: Date.now() + (expiresInSeconds || 3600) * 1000,
-  })).catch(() => {});
+  }), { mode: 0o600, preserveMode: false });
 }
 
 // The state DB is owned by Antigravity and its envelope is write-hostile, so
@@ -267,7 +288,12 @@ export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date
       continue;
     }
 
-    const fraction = typeof model.quotaInfo?.remainingFraction === 'number' ? model.quotaInfo.remainingFraction : 0;
+    const fraction = model.quotaInfo?.remainingFraction;
+
+    if (!Number.isFinite(fraction)) {
+      continue;
+    }
+
     const pool = poolLabel(displayName);
     const existing = pools.get(pool);
 
@@ -330,6 +356,8 @@ export async function createAntigravityProvider(env) {
     return null;
   }
 
+  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
+
   return {
     id: 'antigravity',
     title: 'Antigravity',
@@ -363,6 +391,16 @@ export async function createAntigravityProvider(env) {
         candidates.push(cached);
       }
 
+      if (readOnly && candidates.length === 0) {
+        return {
+          ok: false,
+          status: 'EXPIRED',
+          error: 'Antigravity OAuth token expired or unavailable in read-only mode. Sign in to Antigravity again.',
+          ms: Date.now() - startedAt,
+          items: [],
+        };
+      }
+
       try {
         let result = { data: null };
         let sawAuthFailure = false;
@@ -381,7 +419,17 @@ export async function createAntigravityProvider(env) {
 
         // Refresh only on evidence of auth failure (or no usable token) so a
         // Cloud Code outage doesn't burn a refresh grant every probe.
-        if (!result.data && tokens.refreshToken && (sawAuthFailure || candidates.length === 0)) {
+        if (!result.data && readOnly && sawAuthFailure) {
+          return {
+            ok: false,
+            status: 'EXPIRED',
+            error: 'Antigravity OAuth token was rejected in read-only mode. Sign in to Antigravity again.',
+            ms: Date.now() - startedAt,
+            items: [],
+          };
+        }
+
+        if (!result.data && !readOnly && tokens.refreshToken && (sawAuthFailure || candidates.length === 0)) {
           const refreshed = await refreshAccessToken(tokens.refreshToken);
 
           if (refreshed) {

@@ -87,9 +87,9 @@ export async function readClaudeAccounts(env) {
   return accounts;
 }
 
-async function resolveCredentials(account) {
+async function resolveCredentials(account, readOnly = false) {
   if (account.source === 'manual') {
-    return { token: account.token, plan: '', expiresAt: null, refresh: null };
+    return { token: account.token, plan: '', expiresAt: null, refresh: null, readOnly };
   }
 
   const raw = await readFile(account.credentialsPath, 'utf8').catch((error) => {
@@ -102,13 +102,16 @@ async function resolveCredentials(account) {
     throw new Error('no accessToken in .credentials.json — run `claude` and /login');
   }
 
+  const credentialState = { raw, parsed, oauth };
+
   return {
     token: oauth.accessToken,
     plan: [oauth.subscriptionType, (oauth.rateLimitTier || '').replace(/^default_/, '')].filter(Boolean).join(' / '),
     expiresAt: Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
-    refresh: oauth.refreshToken
-      ? () => refreshOAuthToken(account.credentialsPath, parsed, oauth)
+    refresh: oauth.refreshToken && !readOnly
+      ? () => refreshOAuthToken(account.credentialsPath, credentialState)
       : null,
+    readOnly,
   };
 }
 
@@ -116,7 +119,8 @@ async function resolveCredentials(account) {
 // file, exactly as Claude Code itself would (minified JSON, other keys kept).
 // Returns the new access token, null on soft failure, throws a user-facing
 // string when the refresh token itself is dead (re-login required).
-async function refreshOAuthToken(credentialsPath, parsed, oauth) {
+async function refreshOAuthToken(credentialsPath, credentialState) {
+  const { parsed, oauth } = credentialState;
   let response;
 
   try {
@@ -157,7 +161,15 @@ async function refreshOAuthToken(credentialsPath, parsed, oauth) {
   }
 
   parsed.claudeAiOauth = oauth;
-  await writeFileAtomic(credentialsPath, JSON.stringify(parsed)).catch(() => {});
+  const serialized = JSON.stringify(parsed);
+
+  try {
+    await writeFileAtomic(credentialsPath, serialized, { expectedContent: credentialState.raw });
+  } catch (error) {
+    throw new Error(`OAuth token refreshed but could not safely update Claude credentials: ${error.message}`);
+  }
+
+  credentialState.raw = serialized;
   return oauth.accessToken;
 }
 
@@ -241,12 +253,12 @@ export function formatSpend(spend) {
   return `$${amount} (${Math.round(spend.percent || 0)}%)`;
 }
 
-async function fetchAccountUsage(account, seenTokens) {
+async function fetchAccountUsage(account, seenTokens, readOnly = false) {
   const startedAt = Date.now();
   let credentials;
 
   try {
-    credentials = await resolveCredentials(account);
+    credentials = await resolveCredentials(account, readOnly);
   } catch (error) {
     return { name: account.name, source: account.source, ok: false, status: 'CRED', error: error.message, ms: Date.now() - startedAt, items: [] };
   }
@@ -275,7 +287,9 @@ async function fetchAccountUsage(account, seenTokens) {
       plan: credentials.plan,
       ok: false,
       status: 'EXPIRED',
-      error: 'OAuth token expired and no refresh token available. Run any prompt in Claude Code, or /login again.',
+      error: credentials.readOnly
+        ? 'OAuth token expired in read-only mode. Run any prompt in Claude Code, or /login again.'
+        : 'OAuth token expired and no refresh token available. Run any prompt in Claude Code, or /login again.',
       ms: Date.now() - startedAt,
       items: [],
     };
@@ -497,7 +511,7 @@ export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
     .map((result) => renderAccountBlock(result, width, mode));
 
   if (!compact) {
-    sections.push(renderLocalUsage(snapshot.local, CLAUDE_LOCAL_OPTS));
+    sections.push(renderLocalUsage(snapshot.local, { ...CLAUDE_LOCAL_OPTS, width }));
   }
 
   return sections.join(compact ? '\n' : '\n\n');
@@ -513,6 +527,7 @@ export async function createClaudeProvider(env) {
   }
 
   const scanner = createTranscriptScanner(claudeConfigDir(env));
+  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 
   return {
     id: 'claude',
@@ -527,7 +542,7 @@ export async function createClaudeProvider(env) {
       const results = [];
 
       for (const account of accounts) {
-        results.push(await fetchAccountUsage(account, seenTokens));
+        results.push(await fetchAccountUsage(account, seenTokens, readOnly));
       }
 
       return { results, local, ms: Date.now() - startedAt };

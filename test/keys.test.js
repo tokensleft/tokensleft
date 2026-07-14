@@ -71,8 +71,9 @@ test('buildCodexItems maps windows, extras, reviews, credits', () => {
   assert.deepEqual(items.map((item) => item.label), ['Session', 'Weekly', 'Mini', 'Reviews', 'Credits', 'Resets']);
   assert.equal(items[0].percent, 12);
   assert.equal(items[1].percent, 40);
+  assert.equal(items[4].kind, 'info');
   assert.equal(items[4].value, '250 left');
-  assert.equal(Math.round(items[4].percent), 75);
+  assert.equal(items[4].percent, undefined);
   assert.equal(items[5].kind, 'info');
   assert.equal(items[5].value, '5 available');
   assert.equal(items[5].key, 'codex:resets');
@@ -88,20 +89,29 @@ test('buildCodexItems shows reset credits even at zero and skips them when absen
 });
 
 test('buildCodexItems summarizes the soonest expiry and lists each in details', () => {
-  const expiries = [
-    new Date(Date.now() + 4 * 24 * 60 * 60 * 1000),
-    new Date(Date.now() + 13 * 24 * 60 * 60 * 1000),
-  ];
-  const items = buildCodexItems({ rate_limit_reset_credits: { available_count: 5 } }, {}, { resetCreditExpiries: expiries });
+  const now = Date.now();
+  const sooner = new Date(now + 4 * 24 * 60 * 60 * 1000 + 60_000);
+  const later = new Date(now + 13 * 24 * 60 * 60 * 1000 + 60_000);
+  const expired = new Date(now - 60_000);
+  const expiries = [later, expired, sooner]; // deliberately unsorted
+  const items = buildCodexItems(
+    { rate_limit_reset_credits: { available_count: 5 } },
+    {},
+    { now, resetCreditExpiries: expiries },
+  );
   assert.equal(items[0].label, 'Resets');
   assert.equal(items[0].value, '5 available');
-  assert.match(items[0].note, /^next expires /);
+  assert.match(items[0].note, /^next expires 4d/);
+  assert.equal(items[0].expiresAt, sooner);
   assert.equal(items[0].details.length, 2); // one line per credit
+  assert.match(items[0].details[0], /^expires 4d/);
+  assert.match(items[0].details[1], /^expires 13d/);
   assert.ok(items[0].details.every((line) => /^expires .+\(.+\)$/.test(line)));
 
   // no expiry hints when the count is zero
   const zero = buildCodexItems({ rate_limit_reset_credits: { available_count: 0 } }, {}, { resetCreditExpiries: expiries });
   assert.equal(zero[0].value, '0 available');
+  assert.equal(zero[0].expiresAt, undefined);
   assert.equal(zero[0].note, undefined);
   assert.equal(zero[0].details, undefined);
 });

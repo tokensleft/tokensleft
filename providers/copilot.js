@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from './codex.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 
 const USAGE_URL = 'https://api.github.com/copilot_internal/user';
 const MONTH_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;

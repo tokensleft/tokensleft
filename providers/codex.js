@@ -3,12 +3,13 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed, formatCountdown } from '../lib/format.js';
-import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
-import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
+import { formatCountdown } from '../lib/format.js';
+import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
 import { parseJson } from '../lib/http.js';
-import { COLOR } from '../lib/palette.js';
+import { renderSingleAccount } from '../lib/provider-render.js';
 import { writeFileAtomic } from '../lib/fsx.js';
+
+export { renderSingleAccount } from '../lib/provider-render.js';
 
 // Codex CLI's public OAuth client (an "installed application" client — the
 // same value every Codex install ships with). Used to redeem the refresh
@@ -48,7 +49,7 @@ async function loadAuth(authPath) {
     throw new Error('no Codex tokens in auth.json — run `codex` to log in');
   }
 
-  return auth;
+  return { auth, raw };
 }
 
 function authNeedsRefresh(auth, now = Date.now()) {
@@ -62,7 +63,9 @@ function authNeedsRefresh(auth, now = Date.now()) {
 
 // Returns the new access token, null on soft failure, throws a user-facing
 // string when re-login is required.
-async function refreshAuth(authPath, auth) {
+async function refreshAuth(authPath, authState) {
+  const { auth } = authState;
+
   if (!auth.tokens?.refresh_token) {
     return null;
   }
@@ -106,7 +109,15 @@ async function refreshAuth(authPath, auth) {
   }
 
   auth.last_refresh = new Date().toISOString();
-  await writeFileAtomic(authPath, JSON.stringify(auth, null, 2)).catch(() => {});
+  const serialized = JSON.stringify(auth, null, 2);
+
+  try {
+    await writeFileAtomic(authPath, serialized, { expectedContent: authState.raw });
+  } catch (error) {
+    throw new Error(`OAuth token refreshed but could not safely update Codex credentials: ${error.message}`);
+  }
+
+  authState.raw = serialized;
   return auth.tokens.access_token;
 }
 
@@ -307,19 +318,15 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
 
   const creditsBalance = Number(headers['x-codex-credits-balance'] ?? data?.credits?.balance);
 
-  // 0 usually means "never bought credits" — a permanent 100% bar is noise.
+  // The API exposes a purchased balance but no stable cap. Without a real
+  // denominator this is information, not a percentage-based quota.
   if (Number.isFinite(creditsBalance) && creditsBalance > 0) {
-    const limit = 1000;
-    const used = Math.max(0, Math.min(limit, limit - creditsBalance));
-
-    items.push(buildUsageItem({
+    items.push({
+      kind: 'info',
       key: `${prefix}:credits`,
       label: 'Credits',
       value: `${Math.round(creditsBalance)} left`,
-      percent: (used / limit) * 100,
-      periodMs: WEEKLY_PERIOD_MS,
-      now,
-    }));
+    });
   }
 
   // Early rate-limit resets Codex now grants: a bare count with no known cap,
@@ -329,7 +336,9 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
   const resets = Number(data?.rate_limit_reset_credits?.available_count);
 
   if (Number.isFinite(resets)) {
-    const expiries = Array.isArray(resetCreditExpiries) ? resetCreditExpiries : [];
+    const expiries = (Array.isArray(resetCreditExpiries) ? resetCreditExpiries : [])
+      .filter((date) => date instanceof Date && !Number.isNaN(date.getTime()) && date.getTime() > now)
+      .sort((a, b) => a.getTime() - b.getTime());
     const item = {
       kind: 'info',
       key: `${prefix}:resets`,
@@ -338,6 +347,7 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
     };
 
     if (resets > 0 && expiries.length > 0) {
+      item.expiresAt = expiries[0];
       item.note = `next expires ${formatCountdown(expiries[0]).replace(/^in /, '')}`;
       item.details = expiries.map((date) => `expires ${formatCountdown(date).replace(/^in /, '')} (${shortDate(date)})`);
     }
@@ -573,6 +583,7 @@ export async function createCodexProvider(env) {
   }
 
   const scanner = createRolloutScanner(dirname(authPath));
+  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 
   return {
     id: 'codex',
@@ -582,7 +593,7 @@ export async function createCodexProvider(env) {
     async fetch() {
       const [local, snapshot] = await Promise.all([
         scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
-        fetchCodexUsage(authPath),
+        fetchCodexUsage(authPath, readOnly),
       ]);
       snapshot.local = local;
       return snapshot;
@@ -604,15 +615,17 @@ export async function createCodexProvider(env) {
   };
 }
 
-async function fetchCodexUsage(authPath) {
+async function fetchCodexUsage(authPath, readOnly = false) {
   const startedAt = Date.now();
-  let auth;
+  let authState;
 
   try {
-    auth = await loadAuth(authPath);
+    authState = await loadAuth(authPath);
   } catch (error) {
     return { ok: false, status: 'CRED', error: error.message, ms: Date.now() - startedAt, items: [] };
   }
+
+  const { auth } = authState;
 
   if (!auth.tokens?.access_token) {
     return { ok: false, status: 'APIKEY', error: 'Codex usage is not available for API-key auth. Run `codex` to log in with ChatGPT.', ms: Date.now() - startedAt, items: [] };
@@ -620,9 +633,9 @@ async function fetchCodexUsage(authPath) {
 
   let token = auth.tokens.access_token;
 
-  if (authNeedsRefresh(auth)) {
+  if (!readOnly && authNeedsRefresh(auth)) {
     try {
-      token = (await refreshAuth(authPath, auth)) || token;
+      token = (await refreshAuth(authPath, authState)) || token;
     } catch (message) {
       return { ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
     }
@@ -633,8 +646,8 @@ async function fetchCodexUsage(authPath) {
   try {
     response = await requestUsage(token, auth.tokens.account_id);
 
-    if (response.status === 401 || response.status === 403) {
-      const refreshed = await refreshAuth(authPath, auth);
+    if (!readOnly && (response.status === 401 || response.status === 403)) {
+      const refreshed = await refreshAuth(authPath, authState);
 
       if (refreshed) {
         token = refreshed;
@@ -683,42 +696,4 @@ async function fetchCodexUsage(authPath) {
     plan: data.plan_type || '',
     items: buildCodexItems(data, headers, { resetCreditExpiries }),
   };
-}
-
-// Shared single-account renderer for providers without multi-key support.
-// When the snapshot carries a `local` usage scan, the detail view (`d`)
-// appends the per-model table; `localOpts` labels/styles it (see
-// lib/local-usage.js renderLocalUsage).
-export function renderSingleAccount(snapshot, width, mode, _name, localOpts) {
-  if (snapshot.fatal) {
-    return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
-  }
-
-  const compact = mode === 'compact';
-  const status = snapshot.ok
-    ? `{${COLOR.success}-fg}{bold}OK{/bold}{/${COLOR.success}-fg}`
-    : `{${COLOR.danger}-fg}{bold}${escapeBlessed(String(snapshot.status))}{/bold}{/${COLOR.danger}-fg}`;
-  // The account email is identifying, so it only shows in the detail view.
-  const meta = (compact
-    ? [snapshot.plan]
-    : [snapshot.plan, snapshot.email, `${snapshot.ms}ms`]).filter(Boolean).join(' · ');
-  const metaText = meta ? `  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}` : '';
-  const lines = [`  ${status}${metaText}`];
-
-  if (!snapshot.ok) {
-    lines.push(`  {${COLOR.danger}-fg}${escapeBlessed(snapshot.error || 'unknown error')}{/${COLOR.danger}-fg}`);
-
-    if (snapshot.body && !compact) {
-      lines.push(`  {${COLOR.muted}-fg}${escapeBlessed(snapshot.body)}{/${COLOR.muted}-fg}`);
-    }
-  } else {
-    const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;
-    lines.push(...snapshot.items.map((item) => itemFormatter(item, width)));
-  }
-
-  if (snapshot.local && !compact) {
-    lines.push('', renderLocalUsage(snapshot.local, localOpts));
-  }
-
-  return lines.join('\n');
 }
