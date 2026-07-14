@@ -7,7 +7,10 @@ import {
   buildClaudeLimitItems,
   createTranscriptScanner,
   parseTranscriptChunk,
+  renderClaudeSnapshot,
+  resolveRetryAfterAt,
 } from '../providers/claude.js';
+import { stripBlessedTags } from '../lib/format.js';
 
 const SAMPLE_USAGE = {
   five_hour: { utilization: 3, resets_at: '2026-07-03T12:10:00Z' },
@@ -34,6 +37,36 @@ test('buildClaudeLimitItems maps limits[] including model-scoped (Fable)', () =>
 test('buildClaudeLimitItems falls back to five_hour/seven_day', () => {
   const items = buildClaudeLimitItems({ five_hour: SAMPLE_USAGE.five_hour, seven_day: SAMPLE_USAGE.seven_day }, { prefix: 'sys' });
   assert.deepEqual(items.map((item) => item.label), ['Session', 'Weekly all']);
+});
+
+test('429 retry time honors the server delay with a ten-minute minimum backoff', () => {
+  const now = Date.parse('2026-07-14T06:00:00Z');
+  assert.equal(resolveRetryAfterAt('0', { now }).getTime(), now + 10 * 60 * 1000);
+  assert.equal(resolveRetryAfterAt(null, { now }).getTime(), now + 10 * 60 * 1000);
+  assert.equal(resolveRetryAfterAt('3600', { now }).getTime(), now + 60 * 60 * 1000);
+});
+
+test('429 UI shows a countdown instead of a misleading time-of-day', () => {
+  const retryAfterAt = new Date(Date.now() + 24 * 60 * 60 * 1000 + 5000);
+  const result = {
+    name: 'personal',
+    ok: false,
+    status: 429,
+    error: 'HTTP 429',
+    plan: 'max',
+    ms: 10,
+    retryAfterAt,
+    items: [],
+  };
+  const compact = stripBlessedTags(renderClaudeSnapshot({ results: [result] }, 100, 'compact'));
+  const detail = stripBlessedTags(renderClaudeSnapshot({
+    results: [result],
+    local: { ok: true, models: [] },
+  }, 100, 'detail'));
+
+  assert.match(compact, /retry in 1d/);
+  assert.ok(!compact.includes('retry after'));
+  assert.match(detail, /retry in 1d · at /);
 });
 
 function transcriptLine({ id, model = 'claude-fable-5', t, output = 100 }) {

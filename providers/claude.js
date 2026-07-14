@@ -4,9 +4,10 @@ import { claudeConfigDir } from '../lib/claude-settings.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed } from '../lib/format.js';
+import { escapeBlessed, formatCountdown, formatDateTime } from '../lib/format.js';
 import { parseJson, parseRetryAfterDate } from '../lib/http.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
+import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -21,6 +22,12 @@ const WEEKLY_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
 const MONTHLY_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_REFRESH_MS = 5 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 10 * 60 * 1000;
+
+export function resolveRetryAfterAt(value, { now = Date.now(), minimumMs = RATE_LIMIT_BACKOFF_MS } = {}) {
+  const parsed = parseRetryAfterDate(value, now);
+  const serverTime = parsed instanceof Date ? parsed.getTime() : 0;
+  return new Date(Math.max(now + minimumMs, serverTime));
+}
 
 // USD per 1M tokens; cache read = 0.1x input, cache write 5m = 1.25x, 1h = 2x
 export const MODEL_PRICING = [
@@ -311,6 +318,7 @@ async function fetchAccountUsage(account, seenTokens) {
   }
 
   if (!response.ok || !data) {
+    const retryAfter = response.headers.get('retry-after');
     return {
       name: account.name,
       source: account.source,
@@ -319,7 +327,9 @@ async function fetchAccountUsage(account, seenTokens) {
       status: response.status,
       error: `HTTP ${response.status}`,
       body: text.slice(0, 300),
-      retryAfterAt: parseRetryAfterDate(response.headers.get('retry-after')),
+      retryAfterAt: response.status === 429
+        ? resolveRetryAfterAt(retryAfter)
+        : parseRetryAfterDate(retryAfter),
       ms,
       items: [],
     };
@@ -433,25 +443,26 @@ export function createTranscriptScanner(configDir) {
 function renderAccountBlock(result, width, mode = 'detail') {
   const compact = mode === 'compact';
   const status = result.ok
-    ? '{green-fg}{bold}OK{/bold}{/green-fg}'
-    : `{red-fg}{bold}${escapeBlessed(String(result.status))}{/bold}{/red-fg}`;
+    ? `{${COLOR.success}-fg}{bold}OK{/bold}{/${COLOR.success}-fg}`
+    : `{${COLOR.danger}-fg}{bold}${escapeBlessed(String(result.status))}{/bold}{/${COLOR.danger}-fg}`;
   const metaParts = compact
     ? [result.plan, result.spend ? `spend ${result.spend}` : '']
     : [result.plan, result.source, `${result.ms}ms`];
   const meta = metaParts.filter(Boolean).join(' · ');
   const lines = [
-    `{cyan-fg}{bold}${escapeBlessed(result.name)}{/bold}{/cyan-fg}  ${status}  {white-fg}${escapeBlessed(meta)}{/white-fg}`,
+    `{${COLOR.accentSoft}-fg}{bold}${escapeBlessed(result.name)}{/bold}{/${COLOR.accentSoft}-fg}  ${status}  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}`,
   ];
 
   if (!result.ok) {
-    lines.push(`  {red-fg}${escapeBlessed(result.error || 'unknown error')}{/red-fg}`);
+    lines.push(`  {${COLOR.danger}-fg}${escapeBlessed(result.error || 'unknown error')}{/${COLOR.danger}-fg}`);
 
     if (result.body && !compact) {
-      lines.push(`  {white-fg}${escapeBlessed(result.body)}{/white-fg}`);
+      lines.push(`  {${COLOR.muted}-fg}${escapeBlessed(result.body)}{/${COLOR.muted}-fg}`);
     }
 
     if (result.retryAfterAt) {
-      lines.push(`  {yellow-fg}retry after ${escapeBlessed(result.retryAfterAt.toLocaleTimeString())}{/yellow-fg}`);
+      const exactTime = compact ? '' : ` · at ${formatDateTime(result.retryAfterAt)}`;
+      lines.push(`  {${COLOR.warning}-fg}retry ${escapeBlessed(formatCountdown(result.retryAfterAt))}${escapeBlessed(exactTime)}{/${COLOR.warning}-fg}`);
     }
 
     return lines.join('\n');
@@ -477,7 +488,7 @@ export const CLAUDE_LOCAL_OPTS = {
 // the detail view (`d`). Shared with the demo provider (lib/demo.js).
 export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
   if (snapshot.fatal) {
-    return `  {red-fg}${escapeBlessed(snapshot.fatal)}{/red-fg}`;
+    return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
   }
 
   const compact = mode === 'compact';

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { stripBlessedTags } from '../lib/format.js';
+import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact, solidProgressBar, usageTone } from '../lib/render.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -37,9 +38,9 @@ test('usageTone respects severity over percent', () => {
 test('solidProgressBar extends a forecast ghost tail past the fill', () => {
   // ghost tail from used level to the projected level
   assert.equal(stripBlessedTags(solidProgressBar(25, 60, 20, 'green')), '[█████░░░░░░░        ]');
-  assert.match(solidProgressBar(25, 60, 20, 'green'), /\{green-fg\}█+░+\{\/green-fg\}/);
+  assert.match(solidProgressBar(25, 60, 20, 'green'), new RegExp(`\\{${COLOR.success}-fg\\}█+░+\\{\\/${COLOR.success}-fg\\}`));
   // tail is colored by where the projection lands
-  assert.match(solidProgressBar(50, 95, 20, 'green'), /\{red-fg\}░+\{\/red-fg\}/);
+  assert.match(solidProgressBar(50, 95, 20, 'green'), new RegExp(`\\{${COLOR.danger}-fg\\}░+\\{\\/${COLOR.danger}-fg\\}`));
   // projection behind the fill collapses into it
   assert.equal(stripBlessedTags(solidProgressBar(50, 40, 20, 'green')), '[██████████          ]');
   // no projection: plain fill
@@ -73,6 +74,17 @@ test('compact item renders one line with percent, pace, projection, reset', () =
   assert.ok(!line.includes('dry'), 'no dry warning without depletesAt');
 });
 
+test('soon-reset countdown uses a stable single-cell clock symbol', () => {
+  const soon = item({ resetAt: new Date(Date.now() + HOUR / 2) });
+  const compact = stripBlessedTags(formatUsageItemCompact(soon, 100));
+  const detail = stripBlessedTags(formatUsageItem(soon, 100));
+
+  assert.match(compact, /◷ reset/);
+  assert.match(detail, /◷ resets/);
+  assert.ok(!compact.includes('⏰'));
+  assert.ok(!detail.includes('⏰'));
+});
+
 test('compact item shows ahead-of-pace and dry warning', () => {
   const line = stripBlessedTags(formatUsageItemCompact(item({
     percent: 80,
@@ -81,6 +93,21 @@ test('compact item shows ahead-of-pace and dry warning', () => {
   }), 100));
   assert.match(line, /▲\+20%/);
   assert.match(line, /⚠ dry/);
+});
+
+test('compact item drops lower-priority metadata instead of clipping at narrow widths', () => {
+  const width = 74;
+  const line = stripBlessedTags(formatUsageItemCompact(item({
+    label: 'Very long quota window',
+    percent: 82,
+    paceDelta: 18,
+    projectedPercent: 120,
+    depletesAt: new Date(Date.now() + HOUR / 2),
+  }), width));
+
+  assert.ok(line.length <= width, `${line.length} columns exceeds ${width}`);
+  assert.match(line, /Very long q…/, 'long labels are truncated without shifting the columns');
+  assert.match(line, /⚠ dry/, 'the critical warning has priority over reset metadata');
 });
 
 test('an exhausted quota shows a static warning, not a ticking dry time', () => {
@@ -139,6 +166,42 @@ test('compact item folds count values inline and puts details on their own line'
   assert.ok(!lines[0].includes('search-prime'), 'details should not be on the main line');
   assert.match(lines[1], /^\s+search-prime 2 · web-reader 33$/);
   assert.ok(!/35\/1,000 3%/.test(text), 'percent should be stripped from the folded value');
+});
+
+test('info items render as a plain label/value line with no bar', () => {
+  const info = { kind: 'info', key: 'codex:resets', label: 'Resets', value: '5 available' };
+  const compact = stripBlessedTags(formatUsageItemCompact(info, 100));
+  assert.match(compact, /Resets\s+5 available/);
+  assert.ok(!compact.includes('['), 'no progress bar');
+  const detail = stripBlessedTags(formatUsageItem(info, 96));
+  assert.match(detail, /Resets\s+5 available/);
+  assert.ok(!detail.includes('['), 'no progress bar');
+});
+
+test('info items fold the note into compact and list details in detail', () => {
+  const info = {
+    kind: 'info',
+    key: 'codex:resets',
+    label: 'Resets',
+    value: '5 available',
+    note: 'next expires 3d 14h',
+    details: ['expires 3d 14h (Jul 18, 2026)', 'expires 12d (Jul 27, 2026)'],
+  };
+
+  // compact: one line with the note folded in, no per-credit list
+  const compact = stripBlessedTags(formatUsageItemCompact(info, 100));
+  assert.equal(compact.split('\n').length, 1);
+  assert.match(compact, /5 available · next expires 3d 14h/);
+  assert.ok(!compact.includes('Jul 27'), 'compact does not list every credit');
+
+  // detail: header line plus one line per credit
+  const detail = stripBlessedTags(formatUsageItem(info, 96));
+  const lines = detail.split('\n');
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /Resets\s+5 available/);
+  assert.ok(!lines[0].includes('next expires'), 'detail header omits the folded note');
+  assert.match(lines[1], /expires 3d 14h \(Jul 18, 2026\)/);
+  assert.match(lines[2], /expires 12d \(Jul 27, 2026\)/);
 });
 
 test('detailed item renders multi-line with bar and pace meta', () => {

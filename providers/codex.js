@@ -3,10 +3,11 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed } from '../lib/format.js';
+import { escapeBlessed, formatCountdown } from '../lib/format.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 import { parseJson } from '../lib/http.js';
+import { COLOR } from '../lib/palette.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 
 // Codex CLI's public OAuth client (an "installed application" client — the
@@ -15,6 +16,9 @@ import { writeFileAtomic } from '../lib/fsx.js';
 const TOKEN_REFRESH_URL = 'https://auth.openai.com/oauth/token';
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+// Sibling endpoint: /usage gives only the reset-credit count; the dated
+// credits (each with an expires_at redemption deadline) live here.
+const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
 const REFRESH_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 const SESSION_PERIOD_MS = 5 * 60 * 60 * 1000;
 const WEEKLY_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
@@ -120,6 +124,50 @@ function requestUsage(accessToken, accountId) {
   return fetch(USAGE_URL, { headers, signal: AbortSignal.timeout(15000) });
 }
 
+function requestResetCredits(accessToken, accountId) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'User-Agent': 'tokensleft',
+  };
+
+  if (accountId) {
+    headers['ChatGPT-Account-Id'] = accountId;
+  }
+
+  return fetch(RESET_CREDITS_URL, { headers, signal: AbortSignal.timeout(15000) });
+}
+
+// Redemption deadlines of still-available reset credits, soonest first — the
+// "use it or lose it" dates. Ignores credits that never expire (expires_at
+// null), already lapsed, or aren't available to redeem.
+export function availableResetExpiries(creditsData, now = Date.now()) {
+  const credits = Array.isArray(creditsData?.credits) ? creditsData.credits : [];
+  const expiries = [];
+
+  for (const credit of credits) {
+    if (credit?.status !== 'available') {
+      continue;
+    }
+
+    const ms = Date.parse(credit.expires_at ?? credit.expiresAt ?? '');
+
+    if (Number.isFinite(ms) && ms > now) {
+      expiries.push(ms);
+    }
+  }
+
+  return expiries.sort((a, b) => a - b).map((ms) => new Date(ms));
+}
+
+export function soonestResetCreditExpiry(creditsData, now = Date.now()) {
+  return availableResetExpiries(creditsData, now)[0] ?? null;
+}
+
+function shortDate(date) {
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
 function windowResetAt(window, nowSec) {
   if (!window) {
     return null;
@@ -171,7 +219,7 @@ function windowMeta(window, fallback) {
   return { key: 'monthly', label: 'Monthly', periodMs };
 }
 
-export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Date.now() } = {}) {
+export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Date.now(), resetCreditExpiries = [] } = {}) {
   const items = [];
   const nowSec = Math.floor(now / 1000);
   const rateLimit = data?.rate_limit || null;
@@ -272,6 +320,29 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
       periodMs: WEEKLY_PERIOD_MS,
       now,
     }));
+  }
+
+  // Early rate-limit resets Codex now grants: a bare count with no known cap,
+  // so it's an info line rather than a bar. Redemption deadlines come from the
+  // sibling reset-credits endpoint — compact shows the soonest, detail lists
+  // each credit's expiry (`note`/`details` are info-only render hints).
+  const resets = Number(data?.rate_limit_reset_credits?.available_count);
+
+  if (Number.isFinite(resets)) {
+    const expiries = Array.isArray(resetCreditExpiries) ? resetCreditExpiries : [];
+    const item = {
+      kind: 'info',
+      key: `${prefix}:resets`,
+      label: 'Resets',
+      value: `${resets} available`,
+    };
+
+    if (resets > 0 && expiries.length > 0) {
+      item.note = `next expires ${formatCountdown(expiries[0]).replace(/^in /, '')}`;
+      item.details = expiries.map((date) => `expires ${formatCountdown(date).replace(/^in /, '')} (${shortDate(date)})`);
+    }
+
+    items.push(item);
   }
 
   return items;
@@ -526,7 +597,9 @@ export async function createCodexProvider(env) {
     },
 
     alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent }));
+      return (snapshot.items || [])
+        .filter((item) => item.kind !== 'info')
+        .map((item) => ({ key: item.key, label: item.label, percent: item.percent }));
     },
   };
 }
@@ -588,11 +661,27 @@ async function fetchCodexUsage(authPath) {
 
   const headers = Object.fromEntries([...response.headers.entries()].map(([k, v]) => [k.toLowerCase(), v]));
 
+  // The reset-credit expiry dates live on a sibling endpoint; fetch them
+  // best-effort only when there are credits, and never fail the snapshot.
+  let resetCreditExpiries = [];
+
+  if (Number(data?.rate_limit_reset_credits?.available_count) > 0) {
+    try {
+      const creditsResponse = await requestResetCredits(token, auth.tokens.account_id);
+
+      if (creditsResponse.ok) {
+        resetCreditExpiries = availableResetExpiries(parseJson(await creditsResponse.text()));
+      }
+    } catch {
+      // best-effort: keep the count-only "Resets" line
+    }
+  }
+
   return {
     ok: true,
     ms,
     plan: data.plan_type || '',
-    items: buildCodexItems(data, headers),
+    items: buildCodexItems(data, headers, { resetCreditExpiries }),
   };
 }
 
@@ -600,25 +689,27 @@ async function fetchCodexUsage(authPath) {
 // When the snapshot carries a `local` usage scan, the detail view (`d`)
 // appends the per-model table; `localOpts` labels/styles it (see
 // lib/local-usage.js renderLocalUsage).
-export function renderSingleAccount(snapshot, width, mode, name, localOpts) {
+export function renderSingleAccount(snapshot, width, mode, _name, localOpts) {
   if (snapshot.fatal) {
-    return `  {red-fg}${escapeBlessed(snapshot.fatal)}{/red-fg}`;
+    return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
   }
 
   const compact = mode === 'compact';
   const status = snapshot.ok
-    ? '{green-fg}{bold}OK{/bold}{/green-fg}'
-    : `{red-fg}{bold}${escapeBlessed(String(snapshot.status))}{/bold}{/red-fg}`;
-  const meta = [snapshot.plan, compact ? '' : `${snapshot.ms}ms`].filter(Boolean).join(' · ');
-  const lines = [
-    `{cyan-fg}{bold}${escapeBlessed(name)}{/bold}{/cyan-fg}  ${status}  {white-fg}${escapeBlessed(meta)}{/white-fg}`,
-  ];
+    ? `{${COLOR.success}-fg}{bold}OK{/bold}{/${COLOR.success}-fg}`
+    : `{${COLOR.danger}-fg}{bold}${escapeBlessed(String(snapshot.status))}{/bold}{/${COLOR.danger}-fg}`;
+  // The account email is identifying, so it only shows in the detail view.
+  const meta = (compact
+    ? [snapshot.plan]
+    : [snapshot.plan, snapshot.email, `${snapshot.ms}ms`]).filter(Boolean).join(' · ');
+  const metaText = meta ? `  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}` : '';
+  const lines = [`  ${status}${metaText}`];
 
   if (!snapshot.ok) {
-    lines.push(`  {red-fg}${escapeBlessed(snapshot.error || 'unknown error')}{/red-fg}`);
+    lines.push(`  {${COLOR.danger}-fg}${escapeBlessed(snapshot.error || 'unknown error')}{/${COLOR.danger}-fg}`);
 
     if (snapshot.body && !compact) {
-      lines.push(`  {white-fg}${escapeBlessed(snapshot.body)}{/white-fg}`);
+      lines.push(`  {${COLOR.muted}-fg}${escapeBlessed(snapshot.body)}{/${COLOR.muted}-fg}`);
     }
   } else {
     const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;

@@ -569,7 +569,8 @@ async function fetchGeminiQuota(dir, credsPath) {
     return {
       ok: true,
       ms,
-      plan: [mapTierToPlan(tier, idTokenPayload), email].filter(Boolean).join(' · '),
+      plan: mapTierToPlan(tier, idTokenPayload),
+      email, // shown only in the detail view (see renderSingleAccount)
       items,
     };
   } catch (error) {

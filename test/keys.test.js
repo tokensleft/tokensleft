@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { discoverClaudeSettingsKeys, matchesHost } from '../lib/claude-settings.js';
 import { tokenNeedsRefresh } from '../providers/claude.js';
-import { buildCodexItems } from '../providers/codex.js';
+import { availableResetExpiries, buildCodexItems, soonestResetCreditExpiry } from '../providers/codex.js';
 import {
   buildGeminiItems,
   collectQuotaBuckets,
@@ -65,13 +65,63 @@ test('buildCodexItems maps windows, extras, reviews, credits', () => {
     ],
     code_review_rate_limit: { primary_window: { used_percent: 66 } },
     credits: { balance: 250 },
+    rate_limit_reset_credits: { available_count: 5 },
   };
   const items = buildCodexItems(data, {}, { now });
-  assert.deepEqual(items.map((item) => item.label), ['Session', 'Weekly', 'Mini', 'Reviews', 'Credits']);
+  assert.deepEqual(items.map((item) => item.label), ['Session', 'Weekly', 'Mini', 'Reviews', 'Credits', 'Resets']);
   assert.equal(items[0].percent, 12);
   assert.equal(items[1].percent, 40);
   assert.equal(items[4].value, '250 left');
   assert.equal(Math.round(items[4].percent), 75);
+  assert.equal(items[5].kind, 'info');
+  assert.equal(items[5].value, '5 available');
+  assert.equal(items[5].key, 'codex:resets');
+});
+
+test('buildCodexItems shows reset credits even at zero and skips them when absent', () => {
+  const withZero = buildCodexItems({ rate_limit_reset_credits: { available_count: 0 } }, {});
+  assert.deepEqual(withZero.map((item) => item.label), ['Resets']);
+  assert.equal(withZero[0].value, '0 available');
+
+  const without = buildCodexItems({ rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: 18000 } } }, {});
+  assert.ok(!without.some((item) => item.label === 'Resets'));
+});
+
+test('buildCodexItems summarizes the soonest expiry and lists each in details', () => {
+  const expiries = [
+    new Date(Date.now() + 4 * 24 * 60 * 60 * 1000),
+    new Date(Date.now() + 13 * 24 * 60 * 60 * 1000),
+  ];
+  const items = buildCodexItems({ rate_limit_reset_credits: { available_count: 5 } }, {}, { resetCreditExpiries: expiries });
+  assert.equal(items[0].label, 'Resets');
+  assert.equal(items[0].value, '5 available');
+  assert.match(items[0].note, /^next expires /);
+  assert.equal(items[0].details.length, 2); // one line per credit
+  assert.ok(items[0].details.every((line) => /^expires .+\(.+\)$/.test(line)));
+
+  // no expiry hints when the count is zero
+  const zero = buildCodexItems({ rate_limit_reset_credits: { available_count: 0 } }, {}, { resetCreditExpiries: expiries });
+  assert.equal(zero[0].value, '0 available');
+  assert.equal(zero[0].note, undefined);
+  assert.equal(zero[0].details, undefined);
+});
+
+test('availableResetExpiries returns available future deadlines soonest-first', () => {
+  const now = Date.parse('2026-07-14T00:00:00Z');
+  const data = {
+    credits: [
+      { status: 'available', expires_at: '2026-07-27T00:00:00Z' },
+      { status: 'available', expires_at: '2026-07-18T00:00:00Z' }, // soonest available
+      { status: 'available', expires_at: null }, // never expires — ignored
+      { status: 'redeemed', expires_at: '2026-07-15T00:00:00Z' }, // not available — ignored
+      { status: 'available', expires_at: '2026-07-10T00:00:00Z' }, // already lapsed — ignored
+    ],
+  };
+  const expiries = availableResetExpiries(data, now);
+  assert.deepEqual(expiries.map((d) => d.toISOString()), ['2026-07-18T00:00:00.000Z', '2026-07-27T00:00:00.000Z']);
+  assert.equal(soonestResetCreditExpiry(data, now).toISOString(), '2026-07-18T00:00:00.000Z');
+  assert.deepEqual(availableResetExpiries({ credits: [] }, now), []);
+  assert.equal(soonestResetCreditExpiry(null, now), null);
 });
 
 test('buildCodexItems labels a single weekly-duration window as Weekly, not Session', () => {

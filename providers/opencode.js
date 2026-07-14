@@ -175,7 +175,7 @@ export function buildOpencodeItems(rows, { prefix = 'opencode', now = Date.now()
   return windows.map((window) => buildUsageItem({
     key: `${prefix}:${window.key}`,
     label: window.label,
-    value: `${Math.floor(Math.min(100, (window.cost / window.limit) * 100))}% ($${window.cost.toFixed(2)}/$${window.limit})`,
+    value: `${Math.round(Math.min(100, (window.cost / window.limit) * 100))}% ($${window.cost.toFixed(2)}/$${window.limit})`,
     percent: Math.min(100, Math.max(0, (window.cost / window.limit) * 100)),
     resetAt: window.resetAt,
     periodMs: window.periodMs,

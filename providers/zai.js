@@ -3,6 +3,7 @@ import { readRefreshMs, splitCsv } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { escapeBlessed, formatNumber, jsonPreview, maskKey } from '../lib/format.js';
 import { fetchJsonResult } from '../lib/http.js';
+import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 const BASE_URL = 'https://api.z.ai';
@@ -187,42 +188,43 @@ async function fetchAccountUsage(account) {
 export function renderAccountBlock(result, width, mode = 'detail') {
   const compact = mode === 'compact';
   const status = result.ok
-    ? '{green-fg}{bold}OK{/bold}{/green-fg}'
-    : `{red-fg}{bold}${escapeBlessed(String(result.status))}{/bold}{/red-fg}`;
+    ? `{${COLOR.success}-fg}{bold}OK{/bold}{/${COLOR.success}-fg}`
+    : `{${COLOR.danger}-fg}{bold}${escapeBlessed(String(result.status))}{/bold}{/${COLOR.danger}-fg}`;
+  // The masked key is identifying, so it only shows in the detail view.
   const meta = compact
-    ? [result.plan, result.account.key].filter(Boolean).join(' · ')
+    ? [result.plan].filter(Boolean).join(' · ')
     : `${result.account.key} | ${result.ms}ms | via ${result.account.proxy}`;
   const lines = [
-    `{cyan-fg}{bold}${escapeBlessed(result.account.name)}{/bold}{/cyan-fg}  ${status}  {white-fg}${escapeBlessed(meta)}{/white-fg}`,
+    `{${COLOR.accentSoft}-fg}{bold}${escapeBlessed(result.account.name)}{/bold}{/${COLOR.accentSoft}-fg}  ${status}  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}`,
   ];
 
   if (result.partial) {
-    lines.push(`  {yellow-fg}partial data: ${escapeBlessed(result.partial)}{/yellow-fg}`);
+    lines.push(`  {${COLOR.warning}-fg}partial data: ${escapeBlessed(result.partial)}{/${COLOR.warning}-fg}`);
   }
 
   if (!result.ok) {
-    lines.push(`  {red-fg}${escapeBlessed(result.error || 'Unknown error')}{/red-fg}`);
+    lines.push(`  {${COLOR.danger}-fg}${escapeBlessed(result.error || 'Unknown error')}{/${COLOR.danger}-fg}`);
 
     if (result.url && !compact) {
-      lines.push(`  {white-fg}url{/white-fg} ${escapeBlessed(result.url)}`);
+      lines.push(`  {${COLOR.secondary}-fg}url{/${COLOR.secondary}-fg} ${escapeBlessed(result.url)}`);
     }
 
     if (result.body && !compact) {
-      lines.push(`  {white-fg}body{/white-fg} ${escapeBlessed(result.body)}`);
+      lines.push(`  {${COLOR.secondary}-fg}body{/${COLOR.secondary}-fg} ${escapeBlessed(result.body)}`);
     }
 
     return lines.join('\n');
   }
 
   if (result.plan && !compact) {
-    lines.push(`  {white-fg}plan{/white-fg} {cyan-fg}${escapeBlessed(result.plan)}{/cyan-fg}`);
+    lines.push(`  {${COLOR.secondary}-fg}plan{/${COLOR.secondary}-fg} {${COLOR.accentSoft}-fg}${escapeBlessed(result.plan)}{/${COLOR.accentSoft}-fg}`);
   }
 
   const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;
   lines.push(...result.items.map((item) => itemFormatter(item, width)));
 
   if (result.quotaSample) {
-    lines.push(`  {white-fg}quota sample{/white-fg} ${escapeBlessed(result.quotaSample)}`);
+    lines.push(`  {${COLOR.secondary}-fg}quota sample{/${COLOR.secondary}-fg} ${escapeBlessed(result.quotaSample)}`);
   }
 
   return lines.join('\n');
@@ -269,7 +271,7 @@ export async function createZaiProvider(env) {
 
     render(snapshot, width, mode = 'detail') {
       if (snapshot.fatal) {
-        return `  {red-fg}${escapeBlessed(snapshot.fatal)}{/red-fg}`;
+        return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
       }
 
       const joiner = mode === 'compact' ? '\n' : '\n\n';

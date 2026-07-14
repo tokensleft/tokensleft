@@ -175,4 +175,8 @@ test('buildOpencodeItems produces session/weekly/monthly dollar windows', () => 
   assert.equal(items[1].percent, 50);   // $15 of $30 week
   assert.equal(items[2].percent, 25);   // $15 of $60 month
   assert.match(items[0].value, /\$6\.00\/\$12/);
+
+  const fractional = buildOpencodeItems([{ createdMs: now - 60_000, cost: 6.55 }], { now })[0];
+  assert.equal(Math.round(fractional.percent), 55);
+  assert.match(fractional.value, /^55% /);
 });

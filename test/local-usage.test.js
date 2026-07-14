@@ -53,6 +53,9 @@ test('local usage tables render in detail mode only', () => {
   const snapshot = { ok: true, ms: 1, plan: 'plus', items: [], local };
   assert.match(renderSingleAccount(snapshot, 100, 'detail', 'codex', CODEX_LOCAL_OPTS), /Local usage by model/);
   assert.doesNotMatch(renderSingleAccount(snapshot, 100, 'compact', 'codex', CODEX_LOCAL_OPTS), /Local usage by model/);
+  const compactHeader = stripBlessedTags(renderSingleAccount(snapshot, 100, 'compact', 'codex', CODEX_LOCAL_OPTS));
+  assert.match(compactHeader, /^  OK  plus$/);
+  assert.ok(!compactHeader.includes('codex'), 'the section title already identifies a single-account provider');
 
   // local data stays useful in detail view even when the quota fetch failed
   const failed = { ok: false, status: 401, error: 'expired', items: [], local };
