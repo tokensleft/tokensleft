@@ -23,13 +23,13 @@ jobs:
         include:
           - os: ubuntu-latest
             node: '22.13.0'
+            coverage: true
           - os: windows-latest
             node: '22.13.0'
           - os: macos-latest
             node: '22.13.0'
           - os: ubuntu-latest
             node: '24'
-            coverage: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
