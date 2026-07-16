@@ -4,10 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { writeFileAtomic } from '../lib/fsx.js';
+import { loadNodeSqlite } from '../lib/runtime.js';
 import { createClaudeProvider } from '../providers/claude.js';
 import { buildCodexItems, createCodexProvider } from '../providers/codex.js';
 import { createGeminiProvider } from '../providers/gemini.js';
 import { buildAntigravityItems, createAntigravityProvider } from '../providers/antigravity.js';
+
+const nodeSqlite = await loadNodeSqlite();
+const sqliteTest = (name, run) => test(name, {
+  skip: nodeSqlite ? false : 'requires node:sqlite',
+}, run);
 
 async function tempDir(t, prefix = 'tokensleft-security-') {
   const dir = await mkdtemp(join(tmpdir(), prefix));
@@ -233,10 +239,10 @@ function antigravityEnvelope() {
   return protoString(1, wrapper).toString('base64');
 }
 
-test('Antigravity read-only mode never redeems its refresh token', async (t) => {
+sqliteTest('Antigravity read-only mode never redeems its refresh token', async (t) => {
   const dir = await tempDir(t, 'tokensleft-antigravity-readonly-');
   const dbPath = join(dir, 'state.vscdb');
-  const { DatabaseSync } = await import('node:sqlite');
+  const { DatabaseSync } = nodeSqlite;
   const db = new DatabaseSync(dbPath);
 
   try {
@@ -266,7 +272,7 @@ test('Antigravity read-only mode never redeems its refresh token', async (t) => 
   assert.ok(calls.every((url) => !url.includes('oauth2.googleapis.com/token')));
 });
 
-test('Antigravity removes its private fallback copy after a database error', async (t) => {
+sqliteTest('Antigravity removes its private fallback copy after a database error', async (t) => {
   const dir = await tempDir(t, 'tokensleft-antigravity-copy-');
   const dbPath = join(dir, 'invalid.vscdb');
   await writeFile(dbPath, 'not a sqlite database');

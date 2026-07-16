@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   formatPlainProviderBlock,
+  isNpxExecution,
   plainOutputWidth,
   PROVIDERS,
   parseArgs,
   providerEnvironment,
+  resolveProviderSupport,
   runCli,
   usage,
   VERSION,
@@ -20,6 +22,33 @@ test('PROVIDERS registry lists all eight providers in dashboard order', () => {
     assert.equal(typeof entry.make, 'function', `${entry.id} has a factory`);
     assert.ok(entry.hint, `${entry.id} has a not-detected hint`);
   }
+
+  assert.deepEqual(
+    PROVIDERS.filter((entry) => entry.requiresNodeSqlite).map((entry) => entry.id),
+    ['antigravity', 'opencode'],
+  );
+});
+
+test('resolveProviderSupport skips only SQLite-backed providers when node:sqlite is unavailable', async () => {
+  const unavailable = await resolveProviderSupport(PROVIDERS, async () => null);
+  assert.deepEqual(unavailable.supported.map((entry) => entry.id), ['claude', 'codex', 'gemini', 'copilot', 'grok', 'zai']);
+  assert.deepEqual(unavailable.skipped.map((entry) => entry.id), ['antigravity', 'opencode']);
+
+  const available = await resolveProviderSupport(PROVIDERS, async () => ({ DatabaseSync() {} }));
+  assert.deepEqual(available.supported, PROVIDERS);
+  assert.deepEqual(available.skipped, []);
+});
+
+test('resolveProviderSupport does not probe SQLite for unrelated providers', async () => {
+  let probed = false;
+  const selected = PROVIDERS.filter((entry) => entry.id === 'claude');
+  const support = await resolveProviderSupport(selected, async () => {
+    probed = true;
+    return null;
+  });
+
+  assert.equal(probed, false);
+  assert.deepEqual(support.supported, selected);
 });
 
 test('parseArgs validates --interval and supports the = form', () => {
@@ -57,6 +86,13 @@ test('parseArgs recognizes version and read-only mode', () => {
     providerEnvironment({ TOKEN: 'value' }, true),
     { TOKEN: 'value', TOKENSLEFT_READ_ONLY: '1' },
   );
+});
+
+test('isNpxExecution recognizes npm exec/npx without mistaking an npm script for it', () => {
+  assert.equal(isNpxExecution({ npm_command: 'exec', npm_lifecycle_event: 'npx' }), true);
+  assert.equal(isNpxExecution({ npm_execpath: '/usr/local/bin/npx-cli.js', npm_lifecycle_event: 'npx' }), true);
+  assert.equal(isNpxExecution({ npm_command: 'run-script', npm_lifecycle_event: 'npx' }), false);
+  assert.equal(isNpxExecution({}), false);
 });
 
 test('plain output width prefers terminal columns then COLUMNS', () => {

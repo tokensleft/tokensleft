@@ -22,6 +22,8 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            node: '20.18.1'
+          - os: ubuntu-latest
             node: '22.13.0'
             coverage: true
           - os: windows-latest
@@ -40,5 +42,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: node bin/tokensleft.js --demo --once
       - if: matrix.coverage == true
         run: npm run test:coverage

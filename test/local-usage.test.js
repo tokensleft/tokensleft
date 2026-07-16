@@ -10,11 +10,17 @@ import {
   renderLocalUsage,
 } from '../lib/local-usage.js';
 import { renderSingleAccount } from '../lib/provider-render.js';
+import { loadNodeSqlite } from '../lib/runtime.js';
 import { renderClaudeSnapshot } from '../providers/claude.js';
 import { CODEX_LOCAL_OPTS, createRolloutScanner, parseRolloutChunk } from '../providers/codex.js';
 import { createChatScanner, parseChatJsonlChunk, parseChatMessages } from '../providers/gemini.js';
 import { loadLocalModels } from '../providers/opencode.js';
 import { cellWidth, stripBlessedTags } from '../lib/format.js';
+
+const nodeSqlite = await loadNodeSqlite();
+const sqliteTest = (name, run) => test(name, {
+  skip: nodeSqlite ? false : 'requires node:sqlite',
+}, run);
 
 // --- shared aggregation -------------------------------------------------------
 
@@ -386,12 +392,12 @@ test('chat scanner reads jsonl sessions incrementally, including nested subagent
 
 // --- opencode db aggregation ------------------------------------------------------
 
-test('loadLocalModels aggregates assistant messages per provider/model with recorded cost', async () => {
+sqliteTest('loadLocalModels aggregates assistant messages per provider/model with recorded cost', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'tokensleft-opencode-'));
   after(() => rm(dir, { recursive: true, force: true }));
 
   const dbPath = join(dir, 'opencode.db');
-  const { DatabaseSync } = await import('node:sqlite');
+  const { DatabaseSync } = nodeSqlite;
   const db = new DatabaseSync(dbPath);
   db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)');
   const insert = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)');

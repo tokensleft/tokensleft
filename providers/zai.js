@@ -318,6 +318,7 @@ export async function createZaiProvider(env) {
           key: item.key,
           label: `${result.account.name} ${item.label}`,
           percent: item.percent,
+          resetAt: item.resetAt,
         })));
     },
   };

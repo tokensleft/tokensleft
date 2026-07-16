@@ -14,7 +14,7 @@
 npx tokensleft
 ```
 
-TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、GitHub Copilot、Grok、Antigravity、OpenCode 與 z.ai。需要 Node.js 22.13 以上版本。
+TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、GitHub Copilot、Grok、Antigravity、OpenCode 與 z.ai。需要 Node.js 20.18.1 以上版本；在不支援 `node:sqlite` 的環境（包含 Node 20）會略過 Antigravity 與 OpenCode。
 
 ## 指令
 

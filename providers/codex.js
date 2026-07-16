@@ -610,7 +610,7 @@ export async function createCodexProvider(env) {
     alertItems(snapshot) {
       return (snapshot.items || [])
         .filter((item) => item.kind !== 'info')
-        .map((item) => ({ key: item.key, label: item.label, percent: item.percent }));
+        .map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
     },
   };
 }

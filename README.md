@@ -14,7 +14,7 @@ A fast terminal dashboard for AI subscription quotas, reset times, burn rate, an
 npx tokensleft
 ```
 
-TokensLeft automatically detects logged-in Claude Code, Codex, Gemini CLI, GitHub Copilot, Grok, Antigravity, OpenCode, and z.ai accounts. Requires Node.js 22.13 or newer.
+TokensLeft automatically detects logged-in Claude Code, Codex, Gemini CLI, GitHub Copilot, Grok, Antigravity, OpenCode, and z.ai accounts. Requires Node.js 20.18.1 or newer. On runtimes without `node:sqlite`, including Node 20, Antigravity and OpenCode are skipped.
 
 ## Commands
 

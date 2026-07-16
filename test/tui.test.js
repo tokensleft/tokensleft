@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import blessed from 'blessed';
 import { cellWidth, stripBlessedColorTags, stripBlessedTags } from '../lib/format.js';
+import { COLOR } from '../lib/palette.js';
 import {
   applyRoundedCorners,
+  applyRainbowBorder,
   composeProviderColumns,
   dashboardContentLayout,
   dashboardGeometry,
@@ -13,8 +16,12 @@ import {
   fitProviderBlock,
   formatFooter,
   formatHelp,
+  formatProviderSectionTitle,
+  installCelebrationKeyInterceptor,
   MIN_DASHBOARD_WIDTH,
+  playCelebrationBell,
   rainbowTitle,
+  syncDashboardLabel,
   terminalProfile,
   uiColorMode,
   visibleCellWidth,
@@ -124,6 +131,28 @@ test('dashboardLabel renders a rainbow TokensLeft title with a responsive subtit
   assert.equal(stripBlessedTags(dashboardLabel({ width: 50 })).trim(), 'TokensLeft');
 });
 
+test('dashboard title is detached during celebration instead of leaving a blank cell', () => {
+  const calls = [];
+  const dashboard = {
+    removeLabel: () => calls.push(['remove']),
+    setLabel: (label) => calls.push(['set', label]),
+  };
+
+  syncDashboardLabel(dashboard, ' TokensLeft ', true);
+  syncDashboardLabel(dashboard, ' TokensLeft ', false);
+  assert.deepEqual(calls, [['remove'], ['set', ' TokensLeft ']]);
+});
+
+test('dashboardLabel shows a muted npx prefix when launched through npx', () => {
+  const label = dashboardLabel({ commandPrefix: 'npx', width: 132 });
+
+  assert.equal(
+    stripBlessedTags(label).trim(),
+    `npx TokensLeft · ${DASHBOARD_SUBTITLE}`,
+  );
+  assert.ok(label.includes(`{${COLOR.muted}-fg}npx{/${COLOR.muted}-fg}`));
+});
+
 test('formatFooter stays at two concise lines and aggregates healthy providers', () => {
   const states = Array.from({ length: 8 }, (_, index) => ({
     provider: {
@@ -140,10 +169,53 @@ test('formatFooter stays at two concise lines and aggregates healthy providers',
   assert.equal(lines.length, 2);
   assert.match(lines[0], /8\/8 providers healthy/);
   assert.match(lines[1], /1-8 provider/);
-  assert.match(lines[1], /\? help/);
+  assert.match(lines[1], /\?\/h help/);
   assert.match(lines[1], /↑↓ scroll/);
   assert.ok(lines.every((line) => cellWidth(line) <= 128));
   assert.ok(!lines[0].includes('Provider 1'), 'healthy state is summarized instead of listing every provider');
+});
+
+test('formatFooter gives a free reset the two-line notification area', () => {
+  const footer = stripBlessedTags(formatFooter({
+    states: [],
+    alerts: [],
+    mode: 'compact',
+    resetNotice: { providers: ['Codex'] },
+    width: 100,
+  }));
+  const lines = footer.split('\n');
+
+  assert.deepEqual(lines, [
+    'Codex just got a free reset!',
+    'Press any key to keep creating.',
+  ]);
+  assert.ok(lines.every((line) => cellWidth(line) <= 96));
+});
+
+test('provider usage heading animates only when that provider is celebrating', () => {
+  assert.equal(formatProviderSectionTitle({ title: 'Codex' }), '');
+
+  const first = formatProviderSectionTitle({
+    title: 'Codex',
+    index: 1,
+    providerCount: 3,
+    celebrating: true,
+    phase: 0,
+  });
+  const next = formatProviderSectionTitle({
+    title: 'Codex',
+    index: 1,
+    providerCount: 3,
+    celebrating: true,
+    phase: 1,
+  });
+
+  assert.equal(stripBlessedTags(first), '▌ [2] Codex\n');
+  assert.notEqual(first, next);
+  assert.match(stripBlessedTags(formatProviderSectionTitle({
+    title: 'Codex',
+    celebrating: true,
+  })), /Codex/);
 });
 
 test('narrow footer stays inside its padded width and asks for a resize', () => {
@@ -155,15 +227,24 @@ test('narrow footer stays inside its padded width and asks for a resize', () => 
   assert.ok(lines.every((line) => visibleCellWidth(line) <= 36));
 });
 
-test('help lists controls and numbered provider mappings concisely', () => {
-  const providers = [{ title: 'Claude Code' }, { title: 'Codex' }];
-  const help = formatHelp({ providers, width: 48 });
+test('help lists controls without a provider shortcut table', () => {
+  const help = formatHelp({ width: 48 });
 
-  assert.match(stripBlessedTags(help), /1  Claude Code/);
-  assert.match(stripBlessedTags(help), /2  Codex/);
-  assert.match(stripBlessedTags(help), /\?\s+toggle this help/);
+  assert.match(stripBlessedTags(help), /1-9\s+refresh the numbered provider/);
+  assert.match(stripBlessedTags(help), /\?\/h\s+toggle this help/);
+  assert.doesNotMatch(stripBlessedTags(help), /Provider shortcuts/);
   assert.ok(help.split('\n').every((line) => visibleCellWidth(line) <= 48));
   assert.doesNotThrow(() => stripBlessedColorTags(help));
+});
+
+test('npx help explains how to install TokensLeft as a command', () => {
+  const regular = stripBlessedTags(formatHelp({ width: 64 }));
+  const npx = stripBlessedTags(formatHelp({ npxMode: true, width: 64 }));
+
+  assert.doesNotMatch(regular, /npm i -g tokensleft/);
+  assert.match(npx, /Install as a command/);
+  assert.match(npx, /npm i -g tokensleft/);
+  assert.doesNotMatch(npx, /then run/);
 });
 
 test('applyRoundedCorners replaces all four frame corners', () => {
@@ -186,4 +267,95 @@ test('applyRoundedCorners replaces all four frame corners', () => {
 test('applyRoundedCorners ignores missing or collapsed frames', () => {
   assert.doesNotThrow(() => applyRoundedCorners([], null));
   assert.doesNotThrow(() => applyRoundedCorners([], { xi: 1, xl: 1, yi: 1, yl: 1 }));
+});
+
+test('applyRainbowBorder paints a moving perimeter without recoloring its label', () => {
+  const lines = Array.from({ length: 6 }, () => {
+    const line = Array.from({ length: 10 }, () => [0, ' ']);
+    line.dirty = false;
+    return line;
+  });
+  const coords = { xi: 1, xl: 9, yi: 1, yl: 5 };
+
+  for (let x = coords.xi; x < coords.xl; x += 1) {
+    lines[coords.yi][x][1] = '─';
+    lines[coords.yl - 1][x][1] = '─';
+  }
+
+  for (let y = coords.yi; y < coords.yl; y += 1) {
+    lines[y][coords.xi][1] = '│';
+    lines[y][coords.xl - 1][1] = '│';
+  }
+
+  applyRoundedCorners(lines, coords);
+  lines[coords.yi][4] = [0, 'T'];
+  applyRainbowBorder(lines, coords, 0);
+
+  const foregrounds = () => lines.flatMap((line) => line
+    .filter((cell) => /[─│╭╮╰╯]/u.test(cell[1]))
+    .map((cell) => (cell[0] >> 9) & 0x1ff));
+  const firstFrame = foregrounds();
+  const transitions = firstFrame.reduce(
+    (count, color, index) => count + (index > 0 && color !== firstFrame[index - 1] ? 1 : 0),
+    0,
+  );
+
+  assert.ok(new Set(firstFrame).size >= 4);
+  assert.ok(transitions >= firstFrame.length / 3, 'the perimeter contains many narrow color bands');
+  assert.equal(lines[coords.yi][4][0], 0, 'the title label keeps its own color');
+  assert.equal(lines[2][2][0], 0, 'interior cells are untouched');
+
+  applyRainbowBorder(lines, coords, 5);
+  assert.notDeepEqual(foregrounds(), firstFrame);
+  assert.ok(lines.some((line) => line.dirty));
+});
+
+test('celebration key interceptor dismisses and consumes exactly one keypress', async () => {
+  const program = new EventEmitter();
+  const screen = { lockKeys: false, destroyed: false };
+  let active = true;
+  let dismissals = 0;
+  let downstream = 0;
+
+  program.on('keypress', () => {
+    if (!screen.lockKeys) {
+      downstream += 1;
+    }
+  });
+  const remove = installCelebrationKeyInterceptor(
+    program,
+    screen,
+    () => active,
+    () => {
+      active = false;
+      dismissals += 1;
+    },
+  );
+
+  program.emit('keypress', 'x', { full: 'x' });
+  assert.equal(dismissals, 1);
+  assert.equal(downstream, 0, 'the dismissal key does not reach dashboard commands');
+
+  await Promise.resolve();
+  assert.equal(screen.lockKeys, false);
+  program.emit('keypress', 'r', { full: 'r' });
+  assert.equal(downstream, 1, 'later keys work normally after dismissal');
+  remove();
+});
+
+test('celebration bell uses a playful three-beat pause two-beat rhythm', () => {
+  const scheduled = [];
+  let bells = 0;
+  const timers = playCelebrationBell(
+    { bell: () => { bells += 1; } },
+    (callback, delay) => {
+      scheduled.push({ callback, delay });
+      return `timer-${delay}`;
+    },
+  );
+
+  assert.deepEqual(scheduled.map((entry) => entry.delay), [0, 90, 180, 450, 540]);
+  assert.deepEqual(timers, ['timer-0', 'timer-90', 'timer-180', 'timer-450', 'timer-540']);
+  scheduled.forEach((entry) => entry.callback());
+  assert.equal(bells, 5);
 });

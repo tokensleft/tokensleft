@@ -2,10 +2,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { loadNodeSqlite } from '../lib/runtime.js';
 import { createOpencodeProvider, hasOpencodeGoAuth } from '../providers/opencode.js';
 import { createZaiProvider, displayProxy } from '../providers/zai.js';
+
+const nodeSqlite = await loadNodeSqlite();
+const DatabaseSync = nodeSqlite?.DatabaseSync;
+const sqliteTest = (name, run) => test(name, {
+  skip: nodeSqlite ? false : 'requires node:sqlite',
+}, run);
 
 async function withMockFetch(mock, run) {
   const originalFetch = globalThis.fetch;
@@ -102,7 +108,7 @@ test('z.ai keeps healthy quota data when subscription metadata is partial', asyn
   });
 });
 
-test('OpenCode DB-only installs expose local usage without Go plan quotas', async (t) => {
+sqliteTest('OpenCode DB-only installs expose local usage without Go plan quotas', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'tokensleft-opencode-db-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   createOpencodeDb(join(dir, 'opencode.db'));
@@ -117,11 +123,13 @@ test('OpenCode DB-only installs expose local usage without Go plan quotas', asyn
   assert.deepEqual(snapshot.local.models.map((model) => model.model), ['anthropic/test-model']);
 });
 
-test('OpenCode shows fixed Go quotas only with a non-empty opencode-go key', async (t) => {
+test('OpenCode Go auth requires a non-empty opencode-go key', () => {
   assert.equal(hasOpencodeGoAuth({ 'opencode-go': { key: ' go-key ' } }), true);
   assert.equal(hasOpencodeGoAuth({ 'opencode-go': { key: '   ' } }), false);
   assert.equal(hasOpencodeGoAuth({}), false);
+});
 
+sqliteTest('OpenCode shows fixed Go quotas with an opencode-go key', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'tokensleft-opencode-go-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   createOpencodeDb(join(dir, 'opencode.db'), { providerID: 'opencode-go', cost: 6 });

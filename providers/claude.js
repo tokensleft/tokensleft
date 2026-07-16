@@ -571,6 +571,7 @@ export async function createClaudeProvider(env) {
         key: item.key,
         label: `${result.name} ${item.label}`,
         percent: item.percent,
+        resetAt: item.resetAt,
       })));
     },
 

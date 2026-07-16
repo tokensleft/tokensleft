@@ -161,7 +161,7 @@ export async function createGrokProvider(env) {
     },
 
     alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent }));
+      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
     },
   };
 }

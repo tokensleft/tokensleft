@@ -59,6 +59,7 @@ test('every demo provider keeps the full dashboard contract', async () => {
       assert.ok(alert.key && alert.label, `${provider.id} alert has key/label`);
       assert.ok(Number.isFinite(alert.percent), `${provider.id} alert percent is a number`);
       assert.ok(alert.percent >= 0 && alert.percent <= 100, `${provider.id} percent in range`);
+      assert.ok('resetAt' in alert, `${provider.id} alert carries its reset timestamp`);
     }
   }
 });

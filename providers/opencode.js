@@ -256,7 +256,7 @@ export async function createOpencodeProvider(env) {
     },
 
     alertItems(snapshot) {
-      return (snapshot.items || []).filter((item) => item.kind !== 'empty').map((item) => ({ key: item.key, label: item.label, percent: item.percent }));
+      return (snapshot.items || []).filter((item) => item.kind !== 'empty').map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
     },
   };
 }
