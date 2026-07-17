@@ -155,7 +155,7 @@ test('dashboardLabel shows a muted npx prefix when launched through npx', () => 
 });
 
 test('formatFooter stays at two concise lines and aggregates healthy providers', () => {
-  const states = Array.from({ length: 8 }, (_, index) => ({
+  const states = Array.from({ length: 9 }, (_, index) => ({
     provider: {
       title: `Provider ${index + 1}`,
       headerStatus: () => ({ ok: true, text: 'OK' }),
@@ -168,8 +168,8 @@ test('formatFooter stays at two concise lines and aggregates healthy providers',
   const lines = footer.split('\n');
 
   assert.equal(lines.length, 2);
-  assert.match(lines[0], /8\/8 providers healthy/);
-  assert.match(lines[1], /1-8 provider/);
+  assert.match(lines[0], /9\/9 providers healthy/);
+  assert.match(lines[1], /1-9 provider/);
   assert.match(lines[1], /\?\/h help/);
   assert.match(lines[1], /↑↓ scroll/);
   assert.ok(lines.every((line) => cellWidth(line) <= 128));

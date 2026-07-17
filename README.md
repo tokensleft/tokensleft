@@ -14,7 +14,7 @@ A fast terminal dashboard for AI subscription quotas, reset times, burn rate, an
 npx tokensleft
 ```
 
-TokensLeft automatically detects logged-in Claude Code, Codex, Gemini CLI, GitHub Copilot, Grok, Antigravity, OpenCode, and z.ai accounts. Requires Node.js 20.18.1 or newer. On runtimes without `node:sqlite`, including Node 20, Antigravity and OpenCode are skipped.
+TokensLeft automatically detects logged-in Claude Code, Codex, Gemini CLI, Kimi Code, GitHub Copilot, Grok, Antigravity, OpenCode, and z.ai accounts. Requires Node.js 20.18.1 or newer. On runtimes without `node:sqlite`, including Node 20, Antigravity and OpenCode are skipped.
 
 ## Commands
 
@@ -41,6 +41,7 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 ## Credentials and privacy
 
 - Existing CLI credentials are discovered locally; manual keys can be placed in `~/.tokensleft/.env` or `./.env`. See [.env.example](.env.example).
+- Kimi Code login is detected from `~/.kimi-code/credentials/kimi-code.json` and the legacy `~/.kimi` path. The dashboard shows membership level, shared quota, parallel capacity, and available models including Kimi K3. Multiple membership keys can be supplied as `KIMI_CODE_API_KEY_1`, `_2`, and so on, with optional `KIMI_CODE_NAME_1`, `_2` labels. The original single-key `KIMI_CODE_API_KEY` remains supported; these are not Moonshot `KIMI_API_KEY` keys.
 - Quota requests never pass through a TokensLeft service; they go directly to providers or through your configured proxy. There is no TokensLeft account, server, analytics, or telemetry.
 - Local usage is calculated from CLI logs on your machine and is never uploaded.
 - Unexpected reset history is stored locally in `~/.tokensleft/reset-history.json`; only provider/window names and detection times are recorded.

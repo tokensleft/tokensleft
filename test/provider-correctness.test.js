@@ -77,8 +77,9 @@ test('z.ai treats quota as required and removes proxy userinfo from snapshots', 
     assert.equal(result.plan, 'Max');
     assert.deepEqual(result.items, []);
     assert.equal(result.account.proxy, 'http://proxy.example:8080');
+    assert.equal(result.account.name, '');
     assert.doesNotMatch(JSON.stringify(snapshot), /user|password/);
-    assert.doesNotMatch(provider.render(snapshot, 100, 'detail'), /user|password/);
+    assert.doesNotMatch(provider.render(snapshot, 100, 'detail'), /user|password|key_1|Account 1/);
   });
 });
 

@@ -36,10 +36,13 @@ test('buildZaiItems handles empty quota', () => {
 test('readZaiAccounts reads numbered, single, and csv forms', () => {
   assert.deepEqual(
     readZaiAccounts({ ZAI_KEY_1: 'a', ZAI_NAME_1: 'main', ZAI_KEY_2: 'b' }).map((account) => account.name),
-    ['main', 'key_2'],
+    ['main', 'Account 2'],
   );
-  assert.equal(readZaiAccounts({ ZAI_API_KEY: 'x' }).length, 1);
-  assert.equal(readZaiAccounts({ ZAI_KEYS: 'a,b,c' }).length, 3);
+  assert.equal(readZaiAccounts({ ZAI_API_KEY: 'x' })[0].name, '');
+  assert.deepEqual(readZaiAccounts({ ZAI_KEYS: 'a,b,c' }).map((account) => account.name), [
+    'Account 1',
+    'Account 2',
+    'Account 3',
+  ]);
   assert.equal(readZaiAccounts({}).length, 0);
 });
-

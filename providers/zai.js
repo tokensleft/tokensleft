@@ -14,6 +14,15 @@ const WEEKLY_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
 const MONTHLY_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_REFRESH_MS = 60 * 1000;
 
+function addZaiDisplayNames(accounts) {
+  const multiple = accounts.length > 1;
+
+  return accounts.map((account, index) => ({
+    ...account,
+    name: account.name || (multiple ? `Account ${index + 1}` : ''),
+  }));
+}
+
 export function readZaiAccounts(env) {
   const accounts = [];
 
@@ -25,21 +34,21 @@ export function readZaiAccounts(env) {
     }
 
     accounts.push({
-      name: env[`ZAI_NAME_${index}`] || `key_${index}`,
+      name: env[`ZAI_NAME_${index}`] || '',
       key,
       proxy: env[`ZAI_PROXY_${index}`] || '',
     });
   }
 
   if (accounts.length > 0) {
-    return accounts;
+    return addZaiDisplayNames(accounts);
   }
 
   const singleKey = env.ZAI_API_KEY || env.ZAI_KEY || env.GLM_API_KEY;
 
   if (singleKey) {
     return [{
-      name: env.ZAI_NAME || 'key_1',
+      name: env.ZAI_NAME || '',
       key: singleKey,
       proxy: env.ZAI_PROXY || '',
     }];
@@ -48,11 +57,11 @@ export function readZaiAccounts(env) {
   const keys = splitCsv(env.ZAI_KEYS || env.ZAI_API_KEYS || env.GLM_API_KEYS || '').filter(Boolean);
   const proxies = splitCsv(env.ZAI_PROXIES || '');
 
-  return keys.map((key, index) => ({
-    name: `key_${index + 1}`,
+  return addZaiDisplayNames(keys.map((key, index) => ({
+    name: '',
     key,
     proxy: proxies[index] || '',
-  }));
+  })));
 }
 
 export function getPlanName(subscription) {
@@ -214,8 +223,12 @@ export function renderAccountBlock(result, width, mode = 'detail') {
   const meta = compact
     ? [result.plan].filter(Boolean).join(' · ')
     : `${result.account.key} | ${result.ms}ms | via ${result.account.proxy}`;
+  const accountText = result.account.name
+    ? `{${COLOR.accentSoft}-fg}{bold}${escapeBlessed(result.account.name)}{/bold}{/${COLOR.accentSoft}-fg}  `
+    : '  ';
+  const metaText = meta ? `  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}` : '';
   const lines = [
-    `{${COLOR.accentSoft}-fg}{bold}${escapeBlessed(result.account.name)}{/bold}{/${COLOR.accentSoft}-fg}  ${status}  {${COLOR.muted}-fg}${escapeBlessed(meta)}{/${COLOR.muted}-fg}`,
+    `${accountText}${status}${metaText}`,
   ];
 
   if (result.partial) {
@@ -273,7 +286,9 @@ export async function appendDiscoveredAccounts(accounts, env, hostFragment, disa
 }
 
 export async function createZaiProvider(env) {
-  const accounts = await appendDiscoveredAccounts(readZaiAccounts(env), env, 'z.ai', 'ZAI_AUTO_DISCOVER');
+  const accounts = addZaiDisplayNames(
+    await appendDiscoveredAccounts(readZaiAccounts(env), env, 'z.ai', 'ZAI_AUTO_DISCOVER'),
+  );
 
   if (accounts.length === 0) {
     return null;
@@ -316,7 +331,7 @@ export async function createZaiProvider(env) {
         .filter((item) => item.kind === 'usage')
         .map((item) => ({
           key: item.key,
-          label: `${result.account.name} ${item.label}`,
+          label: [result.account.name, item.label].filter(Boolean).join(' '),
           percent: item.percent,
           resetAt: item.resetAt,
         })));

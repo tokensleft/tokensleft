@@ -13,9 +13,9 @@ import {
   VERSION,
 } from '../lib/cli.js';
 
-const EXPECTED_IDS = ['claude', 'codex', 'gemini', 'copilot', 'grok', 'antigravity', 'opencode', 'zai'];
+const EXPECTED_IDS = ['claude', 'codex', 'gemini', 'kimi', 'copilot', 'grok', 'antigravity', 'opencode', 'zai'];
 
-test('PROVIDERS registry lists all eight providers in dashboard order', () => {
+test('PROVIDERS registry lists all nine providers in dashboard order', () => {
   assert.deepEqual(PROVIDERS.map((entry) => entry.id), EXPECTED_IDS);
 
   for (const entry of PROVIDERS) {
@@ -31,7 +31,7 @@ test('PROVIDERS registry lists all eight providers in dashboard order', () => {
 
 test('resolveProviderSupport skips only SQLite-backed providers when node:sqlite is unavailable', async () => {
   const unavailable = await resolveProviderSupport(PROVIDERS, async () => null);
-  assert.deepEqual(unavailable.supported.map((entry) => entry.id), ['claude', 'codex', 'gemini', 'copilot', 'grok', 'zai']);
+  assert.deepEqual(unavailable.supported.map((entry) => entry.id), ['claude', 'codex', 'gemini', 'kimi', 'copilot', 'grok', 'zai']);
   assert.deepEqual(unavailable.skipped.map((entry) => entry.id), ['antigravity', 'opencode']);
 
   const available = await resolveProviderSupport(PROVIDERS, async () => ({ DatabaseSync() {} }));

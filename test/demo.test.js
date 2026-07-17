@@ -10,7 +10,7 @@ import {
   visibleCellWidth,
 } from '../lib/tui.js';
 
-const ALL_IDS = ['claude', 'codex', 'gemini', 'copilot', 'grok', 'antigravity', 'opencode', 'zai'];
+const ALL_IDS = ['claude', 'codex', 'gemini', 'kimi', 'copilot', 'grok', 'antigravity', 'opencode', 'zai'];
 const FIXED_NOW = Date.parse('2026-07-14T12:00:00Z');
 
 function fixedDemo(ids = ALL_IDS) {
@@ -30,7 +30,7 @@ test('default demo mirrors a plausible detected-provider run', () => {
     clock: () => FIXED_NOW,
     random: () => 0.5,
   }).map((provider) => provider.id), DEFAULT_DEMO_IDS);
-  assert.deepEqual(DEFAULT_DEMO_IDS, ['claude', 'codex', 'gemini', 'antigravity', 'zai']);
+  assert.deepEqual(DEFAULT_DEMO_IDS, ['claude', 'codex', 'gemini', 'kimi', 'antigravity', 'zai']);
 });
 
 test('every demo provider keeps the full dashboard contract', async () => {
@@ -87,6 +87,22 @@ test('demo fixtures follow current live provider shapes', async () => {
 
   assert.equal(snapshots.gemini.plan, 'Free');
   assert.deepEqual(snapshots.gemini.items.map((item) => [item.label, item.percent]), [['Pro', 100], ['Flash', 0]]);
+  assert.equal(snapshots.kimi.plan, 'Allegretto');
+  assert.deepEqual(snapshots.kimi.items.map((item) => item.label), [
+    'Weekly limit',
+    '5h limit',
+    'Shared quota',
+    'Parallel',
+    'Extra Usage',
+    'Models',
+  ]);
+  assert.deepEqual(snapshots.kimi.items.filter((item) => item.kind === 'usage').map((item) => item.percent), [34, 38]);
+  const kimiDetail = stripBlessedTags(providers.kimi.render(snapshots.kimi, 120, 'detail'));
+  const kimiCompact = stripBlessedTags(providers.kimi.render(snapshots.kimi, 120, 'compact'));
+  assert.match(kimiDetail, /Allegretto[\s\S]*Shared quota[\s\S]*Parallel[\s\S]*Models/);
+  assert.match(kimiCompact, /Allegretto/);
+  assert.doesNotMatch(kimiCompact, /Shared quota|Parallel|Models/);
+  assert.match(kimiCompact, /Weekly limit[\s\S]*5h limit[\s\S]*Extra Usage/);
   assert.deepEqual(snapshots.antigravity.items.map((item) => [item.label, item.percent]), [
     ['Gemini Pro', 0],
     ['Gemini Flash', 0],
@@ -94,7 +110,7 @@ test('demo fixtures follow current live provider shapes', async () => {
   ]);
 
   assert.deepEqual(snapshots.copilot.items.map((item) => item.label), ['Premium']);
-  assert.deepEqual(snapshots.zai.results.map((result) => result.account.name), ['key_1', 'key_2']);
+  assert.deepEqual(snapshots.zai.results.map((result) => result.account.name), ['Account 1', 'Account 2']);
   assert.equal(snapshots.zai.results[0].account.proxy, 'direct');
   assert.match(snapshots.zai.results[1].account.proxy, /^http:/);
   assert.equal(snapshots.zai.results[0].items.find((item) => item.label === 'Web Searches').value, '0/1,000 0%');
@@ -162,7 +178,7 @@ test('CLI default demo uses the curated live-shaped provider set', async () => {
   }
 
   const text = output.join('\n');
-  for (const title of ['Claude Code', 'Codex', 'Gemini', 'Antigravity', 'z.ai']) {
+  for (const title of ['Claude Code', 'Codex', 'Gemini', 'Kimi Code', 'Antigravity', 'z.ai']) {
     assert.match(text, new RegExp(`▌ ${title.replace('.', '\\.')}`));
   }
   assert.doesNotMatch(text, /▌ Copilot|▌ Grok|▌ OpenCode/);

@@ -14,7 +14,7 @@
 npx tokensleft
 ```
 
-TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、GitHub Copilot、Grok、Antigravity、OpenCode 與 z.ai。需要 Node.js 20.18.1 以上版本；在不支援 `node:sqlite` 的環境（包含 Node 20）會略過 Antigravity 與 OpenCode。
+TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity、OpenCode 與 z.ai。需要 Node.js 20.18.1 以上版本；在不支援 `node:sqlite` 的環境（包含 Node 20）會略過 Antigravity 與 OpenCode。
 
 ## 指令
 
@@ -41,6 +41,7 @@ tokensleft [providers...] [options]
 ## 憑證與隱私
 
 - 自動讀取本機 CLI 的既有登入資料；手動金鑰可放在 `~/.tokensleft/.env` 或 `./.env`，完整變數請見 [.env.example](.env.example)。
+- Kimi Code 會讀取 `~/.kimi-code/credentials/kimi-code.json`，並相容舊版 `~/.kimi` 路徑；面板會顯示會員等級、共享額度、並行上限與包含 Kimi K3 在內的可用模型。多把會員金鑰可設為 `KIMI_CODE_API_KEY_1`、`_2` 等，並用 `KIMI_CODE_NAME_1`、`_2` 自訂名稱。原本的單一 `KIMI_CODE_API_KEY` 仍可使用；這些不是 Moonshot 的 `KIMI_API_KEY`。
 - 額度請求不會經過 TokensLeft 服務，只會直連各 Provider 或使用你設定的 proxy；TokensLeft 沒有帳號系統、伺服器、分析或遙測。
 - 本機用量只從電腦上的 CLI 紀錄計算，不會上傳。
 - 非預期重置歷史只會儲存在本機 `~/.tokensleft/reset-history.json`，內容僅有 Provider、額度項目名稱與偵測時間。
