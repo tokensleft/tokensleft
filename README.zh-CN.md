@@ -34,7 +34,7 @@ tokensleft [providers...] [options]
 
 ## TUI 按键
 
-`r` 全部刷新 · `1`–`9` 刷新单个 Provider · `d` 切换详细模式 · `?` 帮助 · 方向键/PgUp/PgDn/鼠标滚动 · `q`/Esc 退出
+`r` 全部刷新 · `1`–`9` 刷新单个 Provider · `d` 切换详细模式 · `t` 重置历史（检测过才显示） · `?` 帮助 · 方向键/PgUp/PgDn/鼠标滚动 · `q`/Esc 退出
 
 默认使用 256 色；受限终端可设置 `TOKENSLEFT_COLOR=basic` 或 `NO_COLOR=1`。
 
@@ -43,6 +43,7 @@ tokensleft [providers...] [options]
 - 自动读取本地 CLI 的现有登录信息；手动密钥可放在 `~/.tokensleft/.env` 或 `./.env`，完整变量见 [.env.example](.env.example)。
 - 额度请求不会经过 TokensLeft 服务，只会直连各 Provider 或使用你配置的 proxy；TokensLeft 没有账号系统、服务器、分析或遥测。
 - 本地用量仅从电脑上的 CLI 日志计算，不会上传。
+- 非预期重置历史仅存储在本地 `~/.tokensleft/reset-history.json`，内容只有 Provider、额度项目名称和检测时间。
 - OAuth 凭据会在需要时安全刷新并写回；使用 `--read-only` 可禁用刷新和持久凭据更新。
 
 本地美元金额依据公开 API 价格估算，不代表订阅账单；未知或不完整价格会明确标记。预测采用简单线性推算，并非保证。

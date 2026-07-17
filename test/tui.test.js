@@ -17,6 +17,7 @@ import {
   formatFooter,
   formatHelp,
   formatProviderSectionTitle,
+  formatResetHistory,
   installCelebrationKeyInterceptor,
   MIN_DASHBOARD_WIDTH,
   playCelebrationBell,
@@ -180,15 +181,13 @@ test('formatFooter gives a free reset the two-line notification area', () => {
     states: [],
     alerts: [],
     mode: 'compact',
-    resetNotice: { providers: ['Codex'] },
+    resetNotice: { providers: ['Codex'], detectedAt: '2026-07-17T08:15:30.000Z' },
     width: 100,
   }));
   const lines = footer.split('\n');
 
-  assert.deepEqual(lines, [
-    'Codex just got a free reset!',
-    'Press any key to keep creating.',
-  ]);
+  assert.match(lines[0], /^Codex: free reset detected at .+!$/);
+  assert.equal(lines[1], 'Press any key to keep creating.');
   assert.ok(lines.every((line) => cellWidth(line) <= 96));
 });
 
@@ -235,6 +234,47 @@ test('help lists controls without a provider shortcut table', () => {
   assert.doesNotMatch(stripBlessedTags(help), /Provider shortcuts/);
   assert.ok(help.split('\n').every((line) => visibleCellWidth(line) <= 48));
   assert.doesNotThrow(() => stripBlessedColorTags(help));
+});
+
+test('reset history controls only appear after a reset has been detected', () => {
+  const helpWithoutHistory = stripBlessedTags(formatHelp({ width: 64 }));
+  const helpWithHistory = stripBlessedTags(formatHelp({ resetHistoryAvailable: true, width: 64 }));
+  const footerWithoutHistory = stripBlessedTags(formatFooter({
+    states: [],
+    alerts: [],
+    mode: 'compact',
+    width: 100,
+  }));
+  const footerWithHistory = stripBlessedTags(formatFooter({
+    states: [],
+    alerts: [],
+    mode: 'compact',
+    hasResetHistory: true,
+    width: 100,
+  }));
+
+  assert.doesNotMatch(helpWithoutHistory, /reset history/);
+  assert.match(helpWithHistory, /t\s+show detected reset history/);
+  assert.doesNotMatch(footerWithoutHistory, /t resets/);
+  assert.match(footerWithHistory, /t resets/);
+});
+
+test('reset history lists local detection times, providers, and quota windows', () => {
+  const content = stripBlessedTags(formatResetHistory([
+    {
+      provider: 'Codex',
+      detectedAt: '2026-07-17T08:15:30.000Z',
+      windows: [
+        { key: 'session', label: 'Session' },
+        { key: 'weekly', label: 'Weekly' },
+      ],
+    },
+  ], { width: 72 }));
+
+  assert.match(content, /Detected time \(local\) · newest first/);
+  assert.match(content, /Codex · Session, Weekly/);
+  assert.match(content, /t\/Esc close/);
+  assert.ok(content.split('\n').every((line) => cellWidth(line) <= 72));
 });
 
 test('npx help explains how to install TokensLeft as a command', () => {

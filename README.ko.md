@@ -34,7 +34,7 @@ tokensleft [providers...] [options]
 
 ## TUI 키
 
-`r` 전체 새로 고침 · `1`–`9` 개별 새로 고침 · `d` 상세 화면 · `?` 도움말 · 방향키/PgUp/PgDn/마우스 스크롤 · `q`/Esc 종료
+`r` 전체 새로 고침 · `1`–`9` 개별 새로 고침 · `d` 상세 화면 · `t` 재설정 기록(감지된 뒤에만 표시) · `?` 도움말 · 방향키/PgUp/PgDn/마우스 스크롤 · `q`/Esc 종료
 
 기본값은 256색입니다. 제한된 콘솔에서는 `TOKENSLEFT_COLOR=basic` 또는 `NO_COLOR=1`을 설정하세요.
 
@@ -43,6 +43,7 @@ tokensleft [providers...] [options]
 - 기존 CLI 로그인 정보를 로컬에서 감지합니다. 수동 키는 `~/.tokensleft/.env` 또는 `./.env`에 둘 수 있습니다. 전체 변수는 [.env.example](.env.example)을 참고하세요.
 - 한도 요청은 TokensLeft 서비스를 거치지 않고 각 Provider로 직접 또는 설정한 proxy를 통해 전송됩니다. TokensLeft 계정, 서버, 분석 또는 텔레메트리는 없습니다.
 - 로컬 사용량은 컴퓨터의 CLI 로그에서만 계산되며 업로드되지 않습니다.
+- 예기치 않은 재설정 기록은 `~/.tokensleft/reset-history.json`에 로컬로 저장되며 Provider, 한도 항목 이름, 감지 시간만 기록합니다.
 - OAuth 인증 정보는 필요할 때 안전하게 갱신하고 저장합니다. `--read-only`로 갱신 및 영구 인증 정보 변경을 끌 수 있습니다.
 
 로컬 달러 금액은 공개 API 가격을 기준으로 한 추정치이며 구독 청구액이 아닙니다. 알 수 없거나 일부만 계산된 가격은 명확히 표시합니다. 예측은 단순 선형 추정이며 보장값이 아닙니다.

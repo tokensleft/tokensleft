@@ -34,7 +34,7 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 
 ## TUI keys
 
-`r` refresh all · `1`–`9` refresh one provider · `d` toggle details · `?` help · arrows/PgUp/PgDn/mouse scroll · `q`/Esc quit
+`r` refresh all · `1`–`9` refresh one provider · `d` toggle details · `t` reset history (after one is detected) · `?` help · arrows/PgUp/PgDn/mouse scroll · `q`/Esc quit
 
 256 colors are used by default. For limited consoles, set `TOKENSLEFT_COLOR=basic` or `NO_COLOR=1`.
 
@@ -43,6 +43,7 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 - Existing CLI credentials are discovered locally; manual keys can be placed in `~/.tokensleft/.env` or `./.env`. See [.env.example](.env.example).
 - Quota requests never pass through a TokensLeft service; they go directly to providers or through your configured proxy. There is no TokensLeft account, server, analytics, or telemetry.
 - Local usage is calculated from CLI logs on your machine and is never uploaded.
+- Unexpected reset history is stored locally in `~/.tokensleft/reset-history.json`; only provider/window names and detection times are recorded.
 - OAuth credentials may be refreshed and safely written back when needed. Use `--read-only` to disable refreshes and persistent credential updates.
 
 Local dollar totals are estimates based on public API prices, not subscription billing. Unknown or partial prices are marked instead of being treated as complete. Forecasts are simple linear projections, not guarantees.

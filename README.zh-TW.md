@@ -34,7 +34,7 @@ tokensleft [providers...] [options]
 
 ## TUI 按鍵
 
-`r` 全部更新 · `1`–`9` 更新單一 Provider · `d` 切換詳細模式 · `?` 說明 · 方向鍵/PgUp/PgDn/滑鼠捲動 · `q`/Esc 離開
+`r` 全部更新 · `1`–`9` 更新單一 Provider · `d` 切換詳細模式 · `t` 重置歷史（偵測過才顯示） · `?` 說明 · 方向鍵/PgUp/PgDn/滑鼠捲動 · `q`/Esc 離開
 
 預設使用 256 色；受限終端可設為 `TOKENSLEFT_COLOR=basic` 或 `NO_COLOR=1`。
 
@@ -43,6 +43,7 @@ tokensleft [providers...] [options]
 - 自動讀取本機 CLI 的既有登入資料；手動金鑰可放在 `~/.tokensleft/.env` 或 `./.env`，完整變數請見 [.env.example](.env.example)。
 - 額度請求不會經過 TokensLeft 服務，只會直連各 Provider 或使用你設定的 proxy；TokensLeft 沒有帳號系統、伺服器、分析或遙測。
 - 本機用量只從電腦上的 CLI 紀錄計算，不會上傳。
+- 非預期重置歷史只會儲存在本機 `~/.tokensleft/reset-history.json`，內容僅有 Provider、額度項目名稱與偵測時間。
 - OAuth 憑證需要時會安全更新並寫回；使用 `--read-only` 可停用刷新與永久憑證更新。
 
 本機美元金額依公開 API 價格估算，不代表訂閱帳單；未知或不完整價格會明確標示。預測採簡單線性推估，並非保證。
