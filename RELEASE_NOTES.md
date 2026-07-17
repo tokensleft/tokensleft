@@ -1,3 +1,3 @@
-<!-- release: v0.7.0 -->
+<!-- release: v0.7.1 -->
 
-- Added support for Kimi Code and Kimi K3.
+- Uses your terminal's default background color.

@@ -11,6 +11,7 @@ import {
   dashboardContentLayout,
   dashboardGeometry,
   dashboardLabel,
+  DASHBOARD_BACKGROUND,
   DEFAULT_TERMINAL_PROFILE,
   DASHBOARD_SUBTITLE,
   fitProviderBlock,
@@ -54,6 +55,10 @@ test('terminal color mode supports NO_COLOR and an explicit basic profile', () =
 test('normalized xterm profiles give Blessed the full palette', () => {
   const profile = terminalProfile({ TERM: 'xterm' });
   assert.equal(blessed.tput({ terminal: profile }).colors, 256);
+});
+
+test('dashboard preserves the terminal background color', () => {
+  assert.equal(DASHBOARD_BACKGROUND, 'default');
 });
 
 test('dashboardGeometry expands multi-provider dashboards but keeps single-provider views readable', () => {
