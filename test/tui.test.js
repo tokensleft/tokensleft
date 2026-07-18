@@ -7,6 +7,7 @@ import { COLOR } from '../lib/palette.js';
 import {
   applyRoundedCorners,
   applyRainbowBorder,
+  applyOceanTextWave,
   composeProviderColumns,
   dashboardContentLayout,
   dashboardGeometry,
@@ -18,11 +19,14 @@ import {
   formatFooter,
   formatHelp,
   formatProviderSectionTitle,
+  formatResetAlert,
   formatResetHistory,
   installCelebrationKeyInterceptor,
   MIN_DASHBOARD_WIDTH,
   playCelebrationBell,
   rainbowTitle,
+  resetCelebrationLayout,
+  selectResetHistoryEntry,
   syncDashboardLabel,
   terminalProfile,
   uiColorMode,
@@ -137,7 +141,7 @@ test('dashboardLabel renders a rainbow TokensLeft title with a responsive subtit
   assert.equal(stripBlessedTags(dashboardLabel({ width: 50 })).trim(), 'TokensLeft');
 });
 
-test('dashboard title is detached during celebration instead of leaving a blank cell', () => {
+test('dashboard title remains attached during celebration', () => {
   const calls = [];
   const dashboard = {
     removeLabel: () => calls.push(['remove']),
@@ -145,8 +149,7 @@ test('dashboard title is detached during celebration instead of leaving a blank 
   };
 
   syncDashboardLabel(dashboard, ' TokensLeft ', true);
-  syncDashboardLabel(dashboard, ' TokensLeft ', false);
-  assert.deepEqual(calls, [['remove'], ['set', ' TokensLeft ']]);
+  assert.deepEqual(calls, [['set', ' TokensLeft ']]);
 });
 
 test('dashboardLabel shows a muted npx prefix when launched through npx', () => {
@@ -181,19 +184,51 @@ test('formatFooter stays at two concise lines and aggregates healthy providers',
   assert.ok(!lines[0].includes('Provider 1'), 'healthy state is summarized instead of listing every provider');
 });
 
-test('formatFooter gives a free reset the two-line notification area', () => {
-  const footer = stripBlessedTags(formatFooter({
-    states: [],
-    alerts: [],
-    mode: 'compact',
-    resetNotice: { providers: ['Codex'], detectedAt: '2026-07-17T08:15:30.000Z' },
-    width: 100,
-  }));
-  const lines = footer.split('\n');
+test('reset celebration uses a responsive block-letter title with clear details', () => {
+  const alert = stripBlessedTags(formatResetAlert({
+    providers: ['Codex'],
+    detectedAt: '2026-07-17T08:15:30.000Z',
+  }, { width: 68, height: 24 }));
+  const lines = alert.split('\n');
 
-  assert.match(lines[0], /^Codex: free reset detected at .+!$/);
-  assert.equal(lines[1], 'Press any key to keep creating.');
-  assert.ok(lines.every((line) => cellWidth(line) <= 96));
+  assert.ok((alert.match(/█/g) || []).length >= 100);
+  assert.match(alert, /Codex got a free reset!/);
+  assert.match(alert, /Detected at .+/);
+  assert.match(alert, /PRESS ANY KEY TO KEEP CREATING$/);
+  assert.ok(lines.length >= 12);
+  assert.ok(lines.every((line) => cellWidth(line) <= 68));
+
+  const fallback = stripBlessedTags(formatResetAlert({ providers: ['Codex'] }, {
+    width: 30,
+    height: 6,
+  }));
+  assert.match(fallback, /^FREE RESET DETECTED!/);
+  assert.ok(fallback.split('\n').every((line) => cellWidth(line) <= 30));
+
+  const historyAlert = stripBlessedTags(formatResetAlert({
+    providers: ['Kimi Code'],
+    detectedAt: '2026-07-16T08:15:30.000Z',
+    windows: [{ label: 'Weekly' }, { label: 'Session' }],
+    historyIndex: 1,
+    historyCount: 3,
+  }, { width: 68, height: 24 }));
+  assert.match(historyAlert, /Kimi Code got a free reset!/);
+  assert.doesNotMatch(historyAlert, /Reset: Weekly, Session/);
+  assert.doesNotMatch(historyAlert, /←\/→|RESET HISTORY 2\/3/);
+  assert.match(historyAlert, /PRESS ANY OTHER KEY TO KEEP CREATING$/);
+});
+
+test('reset celebration frame hugs its rendered message', () => {
+  const layout = resetCelebrationLayout({
+    providers: ['Codex'],
+    detectedAt: '2026-07-17T08:15:30.000Z',
+  }, { screenWidth: 160, screenHeight: 40 });
+  const lines = layout.content.split('\n');
+
+  assert.equal(layout.width, Math.max(...lines.map(visibleCellWidth)) + 6);
+  assert.equal(layout.height, lines.length + 4);
+  assert.ok(layout.width < 160);
+  assert.ok(layout.height < 40);
 });
 
 test('provider usage heading animates only when that provider is celebrating', () => {
@@ -241,7 +276,7 @@ test('help lists controls without a provider shortcut table', () => {
   assert.doesNotThrow(() => stripBlessedColorTags(help));
 });
 
-test('reset history controls only appear after a reset has been detected', () => {
+test('reset replay controls only appear after a reset has been detected', () => {
   const helpWithoutHistory = stripBlessedTags(formatHelp({ width: 64 }));
   const helpWithHistory = stripBlessedTags(formatHelp({ resetHistoryAvailable: true, width: 64 }));
   const footerWithoutHistory = stripBlessedTags(formatFooter({
@@ -258,10 +293,10 @@ test('reset history controls only appear after a reset has been detected', () =>
     width: 100,
   }));
 
-  assert.doesNotMatch(helpWithoutHistory, /reset history/);
-  assert.match(helpWithHistory, /t\s+show detected reset history/);
-  assert.doesNotMatch(footerWithoutHistory, /t resets/);
-  assert.match(footerWithHistory, /t resets/);
+  assert.doesNotMatch(helpWithoutHistory, /replay detected resets/);
+  assert.match(helpWithHistory, /t\s+replay detected resets/);
+  assert.doesNotMatch(footerWithoutHistory, /t replay/);
+  assert.match(footerWithHistory, /t replay/);
 });
 
 test('reset history lists local detection times, providers, and quota windows', () => {
@@ -280,6 +315,20 @@ test('reset history lists local detection times, providers, and quota windows', 
   assert.match(content, /Codex · Session, Weekly/);
   assert.match(content, /t\/Esc close/);
   assert.ok(content.split('\n').every((line) => cellWidth(line) <= 72));
+});
+
+test('reset history selection wraps in both directions', () => {
+  const history = [{ provider: 'Codex' }, { provider: 'Kimi Code' }];
+
+  assert.deepEqual(selectResetHistoryEntry(history, 0), {
+    event: history[0],
+    index: 0,
+    count: 2,
+  });
+  assert.equal(selectResetHistoryEntry(history, 1).event, history[1]);
+  assert.equal(selectResetHistoryEntry(history, 2).event, history[0]);
+  assert.equal(selectResetHistoryEntry(history, -1).event, history[1]);
+  assert.equal(selectResetHistoryEntry([], 0), null);
 });
 
 test('npx help explains how to install TokensLeft as a command', () => {
@@ -355,6 +404,117 @@ test('applyRainbowBorder paints a moving perimeter without recoloring its label'
   assert.ok(lines.some((line) => line.dirty));
 });
 
+test('ocean text wave sweeps from upper-left to lower-right with a water-like edge', () => {
+  const defaultAttr = (COLOR.bright << 9) | COLOR.black;
+  const lines = Array.from({ length: 31 }, () => {
+    const line = Array.from({ length: 101 }, () => [defaultAttr, ' ']);
+    line.dirty = false;
+    return line;
+  });
+
+  for (let y = 5; y <= 25; y += 1) {
+    for (let x = 20; x <= 80; x += 1) {
+      lines[y][x][1] = '█';
+    }
+  }
+
+  const coveredCells = () => lines.flatMap((line, y) => line.flatMap((cell, x) => {
+    const foreground = (cell[0] >> 9) & 0x1ff;
+    const horizontal = x - 20;
+    const vertical = (y - 5) * 2;
+    const along = (horizontal + vertical) / Math.SQRT2;
+    return cell[1] === '█' && foreground !== COLOR.bright
+      ? [{ foreground, along }]
+      : [];
+  }));
+
+  applyOceanTextWave(lines, 12);
+
+  const firstWave = coveredCells();
+  assert.ok(firstWave.length > 0);
+  assert.ok(new Set(firstWave.map(({ foreground }) => foreground)).size >= 6);
+  assert.notEqual((lines[5][20][0] >> 9) & 0x1ff, COLOR.bright);
+  assert.equal((lines[25][80][0] >> 9) & 0x1ff, COLOR.bright);
+  assert.notEqual(
+    (lines[5][30][0] >> 9) & 0x1ff,
+    (lines[10][20][0] >> 9) & 0x1ff,
+    'equal diagonal progress has a gentle cross-wave undulation',
+  );
+  assert.equal(lines[0][0][0], defaultAttr, 'the wave has not reached the corners');
+  assert.ok(lines.flat().every((cell) => (cell[0] & 0x1ff) === COLOR.black));
+  const firstProgress = Math.max(...firstWave.map(({ along }) => along));
+
+  applyOceanTextWave(lines, 80);
+
+  const secondWave = coveredCells();
+  assert.ok(Math.max(...secondWave.map(({ along }) => along)) > firstProgress + 40);
+  assert.notEqual((lines[25][80][0] >> 9) & 0x1ff, COLOR.bright);
+  assert.ok(lines.flat().every((cell) => cell[1] === ' ' || cell[1] === '█'));
+  assert.ok(lines.some((line) => line.dirty));
+});
+
+test('ocean text wave animates the block title but leaves supporting text still', () => {
+  const bold = 1 << 18;
+  const titleAttr = bold | (COLOR.bright << 9) | COLOR.black;
+  const messageAttr = bold | (COLOR.bright << 9) | COLOR.black;
+  const lines = Array.from({ length: 21 }, () => {
+    const line = Array.from({ length: 81 }, () => [(COLOR.bright << 9) | COLOR.black, ' ']);
+    line.dirty = false;
+    return line;
+  });
+
+  for (let y = 6; y <= 12; y += 1) {
+    for (let x = 25; x <= 55; x += 1) {
+      lines[y][x] = [titleAttr, '█'];
+    }
+  }
+
+  const message = 'PRESS ANY KEY';
+  const start = 34;
+  [...message].forEach((character, index) => {
+    lines[17][start + index] = [messageAttr, character];
+  });
+  const originalCharacters = lines.map((line) => line.map((cell) => cell[1]));
+
+  applyOceanTextWave(lines, 60);
+
+  const titleCells = lines.flat().filter((cell) => cell[1] === '█');
+  const messageCells = lines[17].slice(start, start + message.length);
+  assert.ok(new Set(titleCells.map((cell) => (cell[0] >> 9) & 0x1ff)).size >= 6);
+  assert.ok(messageCells.every((cell) => (
+    ((cell[0] >> 9) & 0x1ff) === COLOR.bright
+  )));
+  assert.ok(titleCells.every((cell) => (cell[0] & bold) === bold));
+  assert.ok(titleCells.every((cell) => (cell[0] & 0x1ff) === COLOR.black));
+  assert.deepEqual(lines.map((line) => line.map((cell) => cell[1])), originalCharacters);
+  const firstMessageColors = messageCells.map((cell) => (cell[0] >> 9) & 0x1ff);
+
+  applyOceanTextWave(lines, 70);
+  assert.deepEqual(
+    lines[17].slice(start, start + message.length).map((cell) => (cell[0] >> 9) & 0x1ff),
+    firstMessageColors,
+  );
+  assert.deepEqual(lines.map((line) => line.map((cell) => cell[1])), originalCharacters);
+});
+
+test('ocean text wave stays inside the celebration content area', () => {
+  const defaultAttr = (COLOR.bright << 9) | COLOR.black;
+  const lines = Array.from({ length: 9 }, () => {
+    const line = Array.from({ length: 21 }, () => [defaultAttr, ' ']);
+    line.dirty = false;
+    return line;
+  });
+  lines[0][4] = [COLOR.accent << 9, 'T'];
+  lines[4][8] = [defaultAttr, '█'];
+  lines[6][15] = [defaultAttr, 'R'];
+
+  applyOceanTextWave(lines, 37, { xi: 2, xl: 19, yi: 2, yl: 8 });
+
+  assert.equal(lines[0][4][0], COLOR.accent << 9, 'the dashboard title is untouched');
+  assert.notEqual((lines[4][8][0] >> 9) & 0x1ff, COLOR.bright);
+  assert.equal((lines[6][15][0] >> 9) & 0x1ff, COLOR.bright, 'supporting text is still');
+});
+
 test('celebration key interceptor dismisses and consumes exactly one keypress', async () => {
   const program = new EventEmitter();
   const screen = { lockKeys: false, destroyed: false };
@@ -385,6 +545,42 @@ test('celebration key interceptor dismisses and consumes exactly one keypress', 
   assert.equal(screen.lockKeys, false);
   program.emit('keypress', 'r', { full: 'r' });
   assert.equal(downstream, 1, 'later keys work normally after dismissal');
+  remove();
+});
+
+test('celebration key interceptor uses arrows for history without dismissing', async () => {
+  const program = new EventEmitter();
+  const screen = { lockKeys: false, destroyed: false };
+  let dismissals = 0;
+  const directions = [];
+  let downstream = 0;
+
+  program.on('keypress', () => {
+    if (!screen.lockKeys) {
+      downstream += 1;
+    }
+  });
+  const remove = installCelebrationKeyInterceptor(
+    program,
+    screen,
+    () => true,
+    () => { dismissals += 1; },
+    (direction) => {
+      directions.push(direction);
+      return true;
+    },
+  );
+
+  program.emit('keypress', undefined, { name: 'left', full: 'left' });
+  assert.deepEqual(directions, ['left']);
+  assert.equal(dismissals, 0);
+  assert.equal(downstream, 0);
+
+  await Promise.resolve();
+  program.emit('keypress', undefined, { name: 'right', full: 'right' });
+  assert.deepEqual(directions, ['left', 'right']);
+  assert.equal(dismissals, 0);
+  assert.equal(downstream, 0);
   remove();
 });
 

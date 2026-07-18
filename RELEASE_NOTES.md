@@ -1,3 +1,4 @@
-<!-- release: v0.7.1 -->
+<!-- release: v0.8.0 -->
 
-- Uses your terminal's default background color.
+- Reset history can now be replayed with `t` and browsed with the arrow keys.
+- Added 48-hour Codex reset probability forecasts from `willcodexquotareset.com`.

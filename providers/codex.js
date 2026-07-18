@@ -5,7 +5,7 @@ import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { formatCountdown } from '../lib/format.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
-import { parseJson } from '../lib/http.js';
+import { fetchJson, parseJson } from '../lib/http.js';
 import { renderSingleAccount } from '../lib/provider-render.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 
@@ -24,6 +24,98 @@ const REFRESH_AGE_MS = 8 * 24 * 60 * 60 * 1000;
 const SESSION_PERIOD_MS = 5 * 60 * 60 * 1000;
 const WEEKLY_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_REFRESH_MS = 5 * 60 * 1000;
+const RESET_FORECAST_URL = 'https://www.willcodexquotareset.com/api/forecast';
+const RESET_FORECAST_TIMEOUT_MS = 4_000;
+const RESET_FORECAST_CACHE_MS = 30 * 60 * 1000;
+const RESET_FORECAST_MIN_CACHE_MS = 60 * 1000;
+
+export function parseCodexResetForecast(data) {
+  const score = data?.forecast?.score;
+
+  if (!Number.isFinite(score) || score < 0 || score > 100) {
+    return null;
+  }
+
+  return {
+    score: Math.round(score),
+    fetchedAt: toDate(data.fetchedAt),
+    nextRefreshAt: toDate(data.nextRefreshAt),
+  };
+}
+
+function resetForecastCacheExpiry(forecast, now) {
+  const nextRefreshMs = forecast?.nextRefreshAt?.getTime();
+  const latest = now + RESET_FORECAST_CACHE_MS;
+
+  if (!Number.isFinite(nextRefreshMs)) {
+    return latest;
+  }
+
+  return Math.min(latest, Math.max(now + RESET_FORECAST_MIN_CACHE_MS, nextRefreshMs));
+}
+
+// Public, anonymous forecast from willcodexquotareset.com. The request carries
+// no Codex credentials or account identifiers, and failures never affect the
+// provider's authenticated usage snapshot.
+export function createCodexResetForecastFetcher({
+  fetcher = fetchJson,
+  clock = () => Date.now(),
+} = {}) {
+  let cached = null;
+  let expiresAt = 0;
+  let pending = null;
+
+  return async function fetchResetForecast() {
+    const now = clock();
+
+    if (cached && now < expiresAt) {
+      return cached;
+    }
+
+    if (pending) {
+      return pending;
+    }
+
+    pending = (async () => {
+      try {
+        const data = await fetcher(RESET_FORECAST_URL, {
+          timeoutMs: RESET_FORECAST_TIMEOUT_MS,
+          headers: { 'User-Agent': 'tokensleft' },
+        });
+        const forecast = parseCodexResetForecast(data);
+
+        if (!forecast) {
+          return null;
+        }
+
+        const fetchedAt = clock();
+        cached = forecast;
+        expiresAt = resetForecastCacheExpiry(forecast, fetchedAt);
+        return cached;
+      } catch {
+        return null;
+      } finally {
+        pending = null;
+      }
+    })();
+
+    return pending;
+  };
+}
+
+export function buildCodexResetForecastItem(forecast, prefix = 'codex') {
+  if (!forecast || !Number.isFinite(forecast.score) || forecast.score < 0 || forecast.score > 100) {
+    return null;
+  }
+
+  return {
+    kind: 'info',
+    key: `${prefix}:reset-forecast`,
+    label: 'Reset chance (48h)',
+    value: `${Math.round(forecast.score)}% · unofficial`,
+    details: ['source willcodexquotareset.com'],
+  };
+}
 
 export async function findCodexAuthPath(env) {
   const candidates = env.CODEX_HOME
@@ -575,7 +667,9 @@ export function createRolloutScanner(codexHome) {
 
 export const CODEX_LOCAL_OPTS = { source: 'sessions' };
 
-export async function createCodexProvider(env) {
+export async function createCodexProvider(env, {
+  resetForecastFetcher = createCodexResetForecastFetcher(),
+} = {}) {
   const authPath = await findCodexAuthPath(env);
 
   if (!authPath) {
@@ -595,6 +689,16 @@ export async function createCodexProvider(env) {
         scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
         fetchCodexUsage(authPath, readOnly),
       ]);
+
+      if (snapshot.ok) {
+        const resetForecast = await resetForecastFetcher().catch(() => null);
+        const forecastItem = buildCodexResetForecastItem(resetForecast);
+
+        if (forecastItem) {
+          snapshot.items.push(forecastItem);
+        }
+      }
+
       snapshot.local = local;
       return snapshot;
     },

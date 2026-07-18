@@ -42,6 +42,7 @@ tokensleft [providers...] [options]
 
 - 既存 CLI のログイン情報をローカルで検出します。手動キーは `~/.tokensleft/.env` または `./.env` に保存できます。詳細は [.env.example](.env.example) を参照してください。
 - 上限リクエストは TokensLeft のサービスを経由せず、各 Provider へ直接、または設定済み proxy 経由で送信されます。TokensLeft のアカウント、サーバー、分析、テレメトリーはありません。
+- Codex の非公式な48時間以内のリセット確率は `willcodexquotareset.com` から匿名で取得し、認証情報やアカウント識別子は送信しません。
 - ローカル使用量は端末内の CLI ログだけから計算され、アップロードされません。
 - 予期しないリセット履歴は `~/.tokensleft/reset-history.json` にローカル保存され、Provider・上限項目名・検出時刻のみを記録します。
 - OAuth 認証情報は必要時に安全に更新・保存されます。`--read-only` で更新と永続的な認証情報の変更を無効化できます。

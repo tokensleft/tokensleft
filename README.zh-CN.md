@@ -42,6 +42,7 @@ tokensleft [providers...] [options]
 
 - 自动读取本地 CLI 的现有登录信息；手动密钥可放在 `~/.tokensleft/.env` 或 `./.env`，完整变量见 [.env.example](.env.example)。
 - 额度请求不会经过 TokensLeft 服务，只会直连各 Provider 或使用你配置的 proxy；TokensLeft 没有账号系统、服务器、分析或遥测。
+- Codex 的非官方 48 小时重置概率会匿名从 `willcodexquotareset.com` 获取，不会附带凭据或账号标识信息。
 - 本地用量仅从电脑上的 CLI 日志计算，不会上传。
 - 非预期重置历史仅存储在本地 `~/.tokensleft/reset-history.json`，内容只有 Provider、额度项目名称和检测时间。
 - OAuth 凭据会在需要时安全刷新并写回；使用 `--read-only` 可禁用刷新和持久凭据更新。

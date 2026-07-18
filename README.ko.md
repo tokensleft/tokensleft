@@ -42,6 +42,7 @@ tokensleft [providers...] [options]
 
 - 기존 CLI 로그인 정보를 로컬에서 감지합니다. 수동 키는 `~/.tokensleft/.env` 또는 `./.env`에 둘 수 있습니다. 전체 변수는 [.env.example](.env.example)을 참고하세요.
 - 한도 요청은 TokensLeft 서비스를 거치지 않고 각 Provider로 직접 또는 설정한 proxy를 통해 전송됩니다. TokensLeft 계정, 서버, 분석 또는 텔레메트리는 없습니다.
+- Codex의 비공식 48시간 내 재설정 확률은 `willcodexquotareset.com`에서 익명으로 가져오며 인증 정보나 계정 식별자는 전송하지 않습니다.
 - 로컬 사용량은 컴퓨터의 CLI 로그에서만 계산되며 업로드되지 않습니다.
 - 예기치 않은 재설정 기록은 `~/.tokensleft/reset-history.json`에 로컬로 저장되며 Provider, 한도 항목 이름, 감지 시간만 기록합니다.
 - OAuth 인증 정보는 필요할 때 안전하게 갱신하고 저장합니다. `--read-only`로 갱신 및 영구 인증 정보 변경을 끌 수 있습니다.

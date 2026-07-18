@@ -80,9 +80,10 @@ test('demo fixtures follow current live provider shapes', async () => {
   ]);
 
   assert.equal(snapshots.codex.plan, 'plus');
-  assert.deepEqual(snapshots.codex.items.map((item) => item.label), ['Weekly', 'Resets']);
+  assert.deepEqual(snapshots.codex.items.map((item) => item.label), ['Weekly', 'Resets', 'Reset chance (48h)']);
   assert.equal(snapshots.codex.items[1].kind, 'info');
   assert.equal(snapshots.codex.items[1].details.length, 5);
+  assert.equal(snapshots.codex.items[2].value, '68% · unofficial');
   assert.deepEqual(snapshots.codex.local.models.map((entry) => entry.model), ['gpt-5.5', 'gpt-5.6-sol', 'codex-auto-review']);
 
   assert.equal(snapshots.gemini.plan, 'Free');
