@@ -42,7 +42,7 @@
   ],
   "dependencies": {
     "blessed": "^0.1.81",
-    "undici": "^7.11.0"
+    "undici": "^8.7.0"
   },
   "engines": {
     "node": ">=20.18.1"
