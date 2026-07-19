@@ -6,6 +6,7 @@ import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { formatCountdown } from '../lib/format.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
 import { fetchJson, parseJson } from '../lib/http.js';
+import { calculateModelCost } from '../lib/model-pricing.js';
 import { renderSingleAccount } from '../lib/provider-render.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 
@@ -452,27 +453,6 @@ export function buildCodexItems(data, headers = {}, { prefix = 'codex', now = Da
 
 // --- local session-log aggregation ------------------------------------------------
 
-// USD per 1M tokens. Codex rollouts don't record prices, so cost is estimated
-// from public API rates: uncached input + cached input (90% off, except
-// codex-mini at 75% off) + output (reasoning is billed inside output).
-// Pro models don't support prompt caching, so their cached rate is inert.
-export const MODEL_PRICING = [
-  { match: /^gpt-5\.6-sol/, input: 5, cachedInput: 0.5, output: 30 },
-  { match: /^gpt-5\.6-terra/, input: 2.5, cachedInput: 0.25, output: 15 },
-  { match: /^gpt-5\.6-luna/, input: 1, cachedInput: 0.1, output: 6 },
-  { match: /^gpt-5\.5-pro/, input: 30, cachedInput: 30, output: 180 },
-  { match: /^gpt-5\.5/, input: 5, cachedInput: 0.5, output: 30 },
-  { match: /^gpt-5\.4-mini/, input: 0.75, cachedInput: 0.075, output: 4.5 },
-  { match: /^gpt-5\.4-nano/, input: 0.2, cachedInput: 0.02, output: 1.25 },
-  { match: /^gpt-5\.4/, input: 2.5, cachedInput: 0.25, output: 15 },
-  { match: /^gpt-5\.[23]/, input: 1.75, cachedInput: 0.175, output: 14 },
-  { match: /^gpt-5(\.1)?(-codex)?-mini/, input: 0.25, cachedInput: 0.025, output: 2 },
-  { match: /^gpt-5(\.1)?-nano/, input: 0.05, cachedInput: 0.005, output: 0.4 },
-  { match: /^gpt-5-pro/, input: 15, cachedInput: 15, output: 120 },
-  { match: /^gpt-5(\.1)?(-codex)?($|-)/, input: 1.25, cachedInput: 0.125, output: 10 },
-  { match: /^codex-mini/, input: 1.5, cachedInput: 0.375, output: 6 },
-];
-
 // Parses appended rollout lines. Usage is the delta of the cumulative
 // `total_token_usage` between consecutive token_count events — repeated
 // events (same totals) contribute nothing, unlike summing `last_token_usage`.
@@ -593,7 +573,6 @@ export function parseRolloutChunk(text, state) {
 // `input_tokens` includes the cached tokens — split them out for the table.
 function toCodexUsage(event) {
   const model = event.model || 'unknown';
-  const pricing = MODEL_PRICING.find((entry) => entry.match.test(model)) || null;
   const input = Math.max(0, event.input - event.cached);
 
   return {
@@ -602,9 +581,12 @@ function toCodexUsage(event) {
     output: event.output,
     cacheRead: event.cached,
     cacheWrite: 0,
-    cost: pricing
-      ? (input * pricing.input + event.cached * pricing.cachedInput + event.output * pricing.output) / 1e6
-      : null,
+    cost: calculateModelCost(model, {
+      input,
+      output: event.output,
+      cacheRead: event.cached,
+      totalInput: event.input,
+    }),
   };
 }
 

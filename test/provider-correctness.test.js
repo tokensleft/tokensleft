@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { stripBlessedTags } from '../lib/format.js';
 import { loadNodeSqlite } from '../lib/runtime.js';
 import { createOpencodeProvider, hasOpencodeGoAuth } from '../providers/opencode.js';
 import { createZaiProvider, displayProxy } from '../providers/zai.js';
@@ -106,6 +107,59 @@ test('z.ai keeps healthy quota data when subscription metadata is partial', asyn
     assert.equal(result.status, 'OK');
     assert.equal(result.partial, 'subscription 503');
     assert.deepEqual(result.items.map((item) => item.label), ['Session']);
+  });
+});
+
+test('z.ai shows GLM usage from Claude Code transcripts with only a z.ai key', async (t) => {
+  const configDir = await mkdtemp(join(tmpdir(), 'tokensleft-zai-transcripts-'));
+  t.after(() => rm(configDir, { recursive: true, force: true }));
+  const projectDir = join(configDir, 'projects', 'project-a');
+  await mkdir(projectDir, { recursive: true });
+  const timestamp = new Date().toISOString();
+  const transcript = [
+    {
+      type: 'assistant',
+      timestamp,
+      message: {
+        id: 'glm-message',
+        model: 'glm-4.7',
+        usage: { input_tokens: 122, output_tokens: 71, cache_read_input_tokens: 0 },
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp,
+      message: {
+        id: 'claude-message',
+        model: 'claude-sonnet-4-20250514',
+        usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0 },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n';
+  await writeFile(join(projectDir, 'session.jsonl'), transcript);
+
+  await withMockFetch((url) => String(url).includes('/subscription/')
+    ? jsonResponse({ data: [{ productName: 'Coding Plan' }] })
+    : jsonResponse({ data: { limits: [] } }), async () => {
+    const provider = await createZaiProvider({
+      ZAI_API_KEY: 'zai-secret-key',
+      ZAI_AUTO_DISCOVER: '0',
+      CLAUDE_CONFIG_DIR: configDir,
+    });
+    const snapshot = await provider.fetch();
+
+    assert.deepEqual(snapshot.local.models.map((entry) => entry.model), ['glm-4.7']);
+    assert.equal(snapshot.local.models[0].today.input, 122);
+    assert.equal(snapshot.local.models[0].today.output, 71);
+    assert.equal(snapshot.local.models[0].today.messages, 1);
+    assert.equal(snapshot.local.models[0].today.hasCost, true);
+
+    const detail = stripBlessedTags(provider.render(snapshot, 100, 'detail'));
+    const compact = stripBlessedTags(provider.render(snapshot, 100, 'compact'));
+    assert.match(detail, /Local usage by model/);
+    assert.match(detail, /glm-4\.7/);
+    assert.doesNotMatch(detail, /claude-sonnet/);
+    assert.doesNotMatch(compact, /Local usage by model|glm-4\.7/);
   });
 });
 

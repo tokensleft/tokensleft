@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   buildKimiItems,
+  createKimiSessionScanner,
   createKimiProvider,
   findKimiCredential,
+  kimiCodeHome,
   kimiCredentialPaths,
   kimiTokenExpired,
   kimiTokenNeedsRefresh,
+  parseKimiWireChunk,
   parseKimiModelsPayload,
   parseKimiUsagePayload,
   readKimiKeyAccounts,
@@ -53,6 +56,99 @@ test('Kimi credential candidates prefer the current CLI and retain legacy compat
     join('D:/kimi-home', 'credentials', 'kimi-code.json'),
   ]);
   assert.deepEqual(kimiCredentialPaths({ KIMI_AUTH_PATH: 'D:/custom.json' }, 'ignored'), ['D:/custom.json']);
+  assert.equal(kimiCodeHome({}, 'C:/Users/demo'), join('C:/Users/demo', '.kimi-code'));
+  assert.equal(kimiCodeHome({ KIMI_CODE_HOME: 'D:/kimi-home' }, 'ignored'), 'D:/kimi-home');
+  assert.equal(
+    kimiCodeHome({ KIMI_AUTH_PATH: join('D:/portable-kimi', 'credentials', 'kimi-code.json') }, 'ignored'),
+    join('D:/portable-kimi'),
+  );
+});
+
+function kimiWireRecord({
+  t = FIXED_NOW,
+  model = 'kimi-code/k3',
+  input = 10,
+  cached = 20,
+  cacheCreation = 30,
+  output = 40,
+  scope = 'turn',
+} = {}) {
+  return JSON.stringify({
+    type: 'usage.record',
+    time: t,
+    model,
+    usageScope: scope,
+    usage: {
+      inputOther: input,
+      inputCacheRead: cached,
+      inputCacheCreation: cacheCreation,
+      output,
+    },
+  });
+}
+
+test('parseKimiWireChunk reads turn usage without touching conversation events', () => {
+  const partial = '{"type":"usage.record"';
+  const { events, remainder } = parseKimiWireChunk([
+    JSON.stringify({ type: 'message', content: 'ignored' }),
+    kimiWireRecord(),
+  ].join('\n') + `\n${partial}`);
+
+  assert.equal(remainder, partial);
+  assert.deepEqual(events, [{
+    t: FIXED_NOW,
+    model: 'kimi-code/k3',
+    input: 10,
+    cacheRead: 20,
+    cacheWrite: 30,
+    output: 40,
+  }]);
+  assert.equal(parseKimiWireChunk(`${kimiWireRecord({ scope: 'session' })}\n`).events.length, 0);
+});
+
+test('Kimi session scanner aggregates main and subagent wire logs incrementally', async (t) => {
+  const home = await mkdtemp(join(tmpdir(), 'tokensleft-kimi-sessions-'));
+  const mainDir = join(home, 'sessions', 'workdir', 'session-1', 'agents', 'main');
+  const subagentDir = join(home, 'sessions', 'workdir', 'session-1', 'agents', 'researcher');
+  const mainWire = join(mainDir, 'wire.jsonl');
+  await mkdir(mainDir, { recursive: true });
+  await mkdir(subagentDir, { recursive: true });
+  await writeFile(mainWire, `${kimiWireRecord({ t: FIXED_NOW + 1000 })}\n`);
+  await writeFile(
+    join(subagentDir, 'wire.jsonl'),
+    `${kimiWireRecord({ t: FIXED_NOW + 2000, input: 1, cached: 2, cacheCreation: 3, output: 4 })}\n`,
+  );
+  t.after(async () => {
+    await import('node:fs/promises').then(({ rm }) => rm(home, { recursive: true, force: true }));
+  });
+
+  const scanner = createKimiSessionScanner(home);
+  let result = await scanner.scan(FIXED_NOW + 60_000);
+  assert.equal(result.ok, true);
+  assert.equal(result.files, 2);
+  assert.equal(result.models[0].today.messages, 2);
+  assert.equal(result.models[0].today.input, 11);
+  assert.equal(result.models[0].today.cacheRead, 22);
+  assert.equal(result.models[0].today.cacheWrite, 33);
+  assert.equal(result.models[0].today.output, 44);
+  assert.equal(result.models[0].today.hasCost, true);
+  assert.equal(result.models[0].today.hasUnknownCost, false);
+  assert.ok(result.models[0].today.cost > 0);
+
+  await appendFile(mainWire, `${kimiWireRecord({ t: FIXED_NOW + 3000, output: 5 })}\n`);
+  result = await scanner.scan(FIXED_NOW + 60_000);
+  assert.equal(result.models[0].today.messages, 3);
+  assert.equal(result.models[0].today.output, 49);
+
+  result = await scanner.scan(FIXED_NOW + 60_000);
+  assert.equal(result.models[0].today.messages, 3);
+});
+
+test('Kimi session scanner reports a missing sessions directory', async () => {
+  const scanner = createKimiSessionScanner(join(tmpdir(), 'tokensleft-kimi-missing'));
+  const result = await scanner.scan();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /no session logs/);
 });
 
 test('Kimi key accounts support numbered, single, and comma-separated forms', () => {
@@ -260,6 +356,9 @@ test('Kimi provider reads a valid CLI token and maps /usages into reset-aware al
     expires_at: Math.floor(Date.now() / 1000) + 7200,
     expires_in: 3600,
   });
+  const agentDir = join(home, 'sessions', 'workdir', 'session-1', 'agents', 'main');
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, 'wire.jsonl'), `${kimiWireRecord({ t: Date.now() })}\n`);
   const calls = [];
   mockFetch(t, async (url, options) => {
     calls.push({ url: String(url), options });
@@ -283,6 +382,10 @@ test('Kimi provider reads a valid CLI token and maps /usages into reset-aware al
   assert.deepEqual(provider.alertItems(snapshot).map((item) => item.label), ['Weekly limit', '5h limit']);
   assert.equal(provider.headerStatus(snapshot).text, '1/1 OK');
   assert.match(provider.render(snapshot, 96, 'compact'), /Weekly limit/);
+  assert.doesNotMatch(provider.render(snapshot, 96, 'compact'), /Local usage by model/);
+  assert.equal(snapshot.local.ok, true);
+  assert.match(provider.render(snapshot, 96, 'detail'), /Local usage by model/);
+  assert.match(provider.render(snapshot, 96, 'detail'), /k3/);
 });
 
 test('Kimi provider refreshes an expired OAuth token and atomically persists the rotation', async (t) => {

@@ -44,11 +44,11 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 - Kimi Code login is detected from `~/.kimi-code/credentials/kimi-code.json` and the legacy `~/.kimi` path. The dashboard shows membership level, shared quota, parallel capacity, and available models including Kimi K3. Multiple membership keys can be supplied as `KIMI_CODE_API_KEY_1`, `_2`, and so on, with optional `KIMI_CODE_NAME_1`, `_2` labels. The original single-key `KIMI_CODE_API_KEY` remains supported; these are not Moonshot `KIMI_API_KEY` keys.
 - Quota requests never pass through a TokensLeft service; they go directly to providers or through your configured proxy. There is no TokensLeft account, server, analytics, or telemetry.
 - Codex's unofficial 48-hour reset chance is fetched anonymously from `willcodexquotareset.com`; no credential or account identifier is included.
-- Local usage is calculated from CLI logs on your machine and is never uploaded.
+- Local usage for Claude Code, Codex, Gemini CLI, and Kimi Code is calculated from CLI logs on your machine and is never uploaded. The detail view shows input, cached input, output, and estimated API cost when pricing is available.
 - Unexpected reset history is stored locally in `~/.tokensleft/reset-history.json`; only provider/window names and detection times are recorded.
 - OAuth credentials may be refreshed and safely written back when needed. Use `--read-only` to disable refreshes and persistent credential updates.
 
-Local dollar totals are estimates based on public API prices, not subscription billing. Unknown or partial prices are marked instead of being treated as complete. Forecasts are simple linear projections, not guarantees.
+Local dollar totals are estimates based on public API prices, not subscription billing. Prices use an embedded LiteLLM/models.dev snapshot, refresh at most once per day, and fall back to the last known good copy when offline. Unknown or partial prices are marked instead of being treated as complete. Forecasts are simple linear projections, not guarantees.
 
 ## Development
 

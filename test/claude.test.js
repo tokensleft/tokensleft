@@ -6,6 +6,7 @@ import { after, test } from 'node:test';
 import {
   buildClaudeLimitItems,
   createTranscriptScanner,
+  isZaiModel,
   parseTranscriptChunk,
   renderClaudeSnapshot,
   resolveRetryAfterAt,
@@ -113,6 +114,15 @@ test('parseTranscriptChunk skips non-assistant and synthetic models', () => {
   assert.equal(parseTranscriptChunk(lines).events.length, 0);
 });
 
+test('isZaiModel recognizes GLM model ids without claiming unrelated models', () => {
+  assert.equal(isZaiModel('glm-4.7'), true);
+  assert.equal(isZaiModel('zai/glm-4.6'), true);
+  assert.equal(isZaiModel('z-ai/GLM-4.5-Air'), true);
+  assert.equal(isZaiModel('models/zhipuai/glm_4'), true);
+  assert.equal(isZaiModel('claude-sonnet-4-20250514'), false);
+  assert.equal(isZaiModel('acme/not-glm-4'), false);
+});
+
 test('transcript scanner aggregates incrementally and dedupes by message id', async () => {
   const configDir = await mkdtemp(join(tmpdir(), 'tokensleft-test-'));
   after(() => rm(configDir, { recursive: true, force: true }));
@@ -142,6 +152,29 @@ test('transcript scanner aggregates incrementally and dedupes by message id', as
   // Unchanged file: aggregation is stable.
   result = await scanner.scan(now);
   assert.equal(result.models[0].week.messages, 2);
+});
+
+test('transcript scanners partition z.ai models from other Claude Code sessions', async (t) => {
+  const configDir = await mkdtemp(join(tmpdir(), 'tokensleft-model-routing-'));
+  t.after(() => rm(configDir, { recursive: true, force: true }));
+
+  const projectDir = join(configDir, 'projects', 'proj-a');
+  await mkdir(projectDir, { recursive: true });
+  const now = Date.now();
+  await writeFile(join(projectDir, 'session.jsonl'), [
+    transcriptLine({ id: 'glm-message', model: 'glm-4.7', t: now }),
+    transcriptLine({ id: 'claude-message', model: 'claude-sonnet-4-20250514', t: now }),
+  ].join(''));
+
+  const [zai, claude] = await Promise.all([
+    createTranscriptScanner(configDir, { includeModel: isZaiModel }).scan(now),
+    createTranscriptScanner(configDir, { includeModel: (model) => !isZaiModel(model) }).scan(now),
+  ]);
+
+  assert.deepEqual(zai.models.map((entry) => entry.model), ['glm-4.7']);
+  assert.deepEqual(claude.models.map((entry) => entry.model), ['claude-sonnet-4-20250514']);
+  assert.equal(zai.models[0].week.messages, 1);
+  assert.equal(claude.models[0].week.messages, 1);
 });
 
 test('transcript scanner reports missing projects dir', async () => {

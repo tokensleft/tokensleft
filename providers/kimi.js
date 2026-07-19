@@ -1,12 +1,14 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readRefreshMs, splitCsv } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { escapeBlessed, formatNumber } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
+import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
+import { calculateModelCost } from '../lib/model-pricing.js';
 import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
@@ -51,6 +53,22 @@ export function kimiCredentialPaths(env = {}, home = homedir()) {
     join(home, '.kimi-code', 'credentials', 'kimi-code.json'),
     join(home, '.kimi', 'credentials', 'kimi-code.json'),
   ];
+}
+
+export function kimiCodeHome(env = {}, home = homedir()) {
+  const explicitHome = cleanEnvValue(env.KIMI_CODE_HOME);
+
+  if (explicitHome) {
+    return explicitHome;
+  }
+
+  const authPath = cleanEnvValue(env.KIMI_AUTH_PATH);
+
+  if (authPath && basename(dirname(authPath)).toLowerCase() === 'credentials') {
+    return dirname(dirname(authPath));
+  }
+
+  return join(home, '.kimi-code');
 }
 
 async function readOAuthCredential(path) {
@@ -1081,6 +1099,106 @@ async function fetchKimiAccountUsage(account, env, readOnly, loadModels) {
   });
 }
 
+function tokenCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function kimiRecordTime(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 0 && value < 1e12 ? value * 1000 : value;
+  }
+
+  const numeric = typeof value === 'string' && value.trim() ? Number(value) : NaN;
+
+  if (Number.isFinite(numeric)) {
+    return numeric > 0 && numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+
+  return Date.parse(value || '');
+}
+
+// Kimi Code stores one turn-scoped usage.record after each model response in
+// sessions/<workdir>/<session>/agents/<agent>/wire.jsonl. Scanning every agent
+// includes subagent usage without parsing or retaining prompt/response records.
+export function parseKimiWireChunk(text) {
+  const source = String(text);
+  const events = [];
+  const lines = source.split('\n');
+  const remainder = source.endsWith('\n') ? '' : lines.pop() ?? '';
+
+  for (const line of lines) {
+    if (!line.includes('"usage.record"')) {
+      continue;
+    }
+
+    const record = parseJson(line);
+    const usage = record?.type === 'usage.record' ? record.usage : null;
+    const scope = record?.usageScope ?? record?.usage_scope;
+    const t = kimiRecordTime(record?.time ?? record?.timestamp);
+
+    if (!isRecord(usage) || (scope && scope !== 'turn') || !Number.isFinite(t)) {
+      continue;
+    }
+
+    const event = {
+      t,
+      model: typeof record.model === 'string' && record.model ? record.model : 'unknown',
+      input: tokenCount(usage.inputOther ?? usage.input_other),
+      cacheRead: tokenCount(usage.inputCacheRead ?? usage.input_cache_read),
+      cacheWrite: tokenCount(usage.inputCacheCreation ?? usage.input_cache_creation),
+      output: tokenCount(usage.output),
+    };
+
+    if (event.input + event.cacheRead + event.cacheWrite + event.output > 0) {
+      events.push(event);
+    }
+  }
+
+  return { events, remainder };
+}
+
+export function createKimiSessionScanner(home) {
+  const sessionsDir = join(home, 'sessions');
+
+  const listFiles = async () => {
+    let entries;
+
+    try {
+      entries = await readdir(sessionsDir, { recursive: true });
+    } catch {
+      throw new Error(`no session logs at ${sessionsDir}`);
+    }
+
+    return entries
+      .filter((entry) => {
+        const normalized = entry.replaceAll('\\', '/');
+        return normalized.includes('/agents/') && normalized.endsWith('/wire.jsonl');
+      })
+      .map((entry) => join(sessionsDir, entry));
+  };
+
+  return createLocalUsageScanner({
+    listFiles,
+    refreshFile: jsonlRefresher(parseKimiWireChunk),
+    toUsage: (event) => ({
+      ...event,
+      cost: calculateModelCost(event.model, {
+        input: event.input,
+        output: event.output,
+        cacheRead: event.cacheRead,
+        cacheWrite: event.cacheWrite,
+      }),
+    }),
+  });
+}
+
+export const KIMI_LOCAL_OPTS = {
+  source: 'sessions',
+  shorten: (model) => model.replace(/^kimi-code\//, ''),
+  note: 'in includes cache writes; cached in = cache reads; $ estimates API cost, not subscription billing',
+};
+
 function renderKimiAccountBlock(result, width, mode = 'detail') {
   const compact = mode === 'compact';
   const status = result.ok
@@ -1120,8 +1238,14 @@ export function renderKimiSnapshot(snapshot, width, mode = 'detail') {
     return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
   }
 
-  const joiner = mode === 'compact' ? '\n' : '\n\n';
-  return snapshot.results.map((result) => renderKimiAccountBlock(result, width, mode)).join(joiner);
+  const compact = mode === 'compact';
+  const sections = snapshot.results.map((result) => renderKimiAccountBlock(result, width, mode));
+
+  if (!compact && snapshot.local) {
+    sections.push(renderLocalUsage(snapshot.local, { ...KIMI_LOCAL_OPTS, width }));
+  }
+
+  return sections.join(compact ? '\n' : '\n\n');
 }
 
 export async function createKimiProvider(env) {
@@ -1133,6 +1257,7 @@ export async function createKimiProvider(env) {
 
   const readOnly = readOnlyMode(env);
   const loadModels = createKimiModelLoader(env);
+  const scanner = createKimiSessionScanner(kimiCodeHome(env));
 
   return {
     id: 'kimi',
@@ -1146,13 +1271,16 @@ export async function createKimiProvider(env) {
         return { fatal: 'Kimi Code credentials disappeared. Run `kimi` and /login again.', results: [] };
       }
 
-      const results = await Promise.all(accounts.map((account) => fetchKimiAccountUsage(
-        account,
-        env,
-        readOnly,
-        loadModels,
-      )));
-      return { results };
+      const [local, results] = await Promise.all([
+        scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
+        Promise.all(accounts.map((account) => fetchKimiAccountUsage(
+          account,
+          env,
+          readOnly,
+          loadModels,
+        ))),
+      ]);
+      return { results, local };
     },
 
     render(snapshot, width, mode = 'detail') {

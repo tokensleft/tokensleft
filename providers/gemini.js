@@ -7,6 +7,7 @@ import { escapeBlessed } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
+import { calculateModelCost } from '../lib/model-pricing.js';
 import { renderSingleAccount } from '../lib/provider-render.js';
 
 const TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
@@ -349,18 +350,6 @@ async function discoverProjectId(accessToken, loadCodeAssistData) {
 
 // --- local session-log aggregation ------------------------------------------------
 
-// USD per 1M tokens at public API rates (pro models are tiered by prompt
-// size — this is the ≤200k-token tier). Thinking tokens bill at output rate.
-export const MODEL_PRICING = [
-  { match: /^gemini-3(\.\d+)?-flash-lite/, input: 0.25, cachedInput: 0.025, output: 1.5 },
-  { match: /^gemini-3\.5-flash/, input: 1.5, cachedInput: 0.15, output: 9 },
-  { match: /^gemini-3(\.\d+)?-pro/, input: 2, cachedInput: 0.2, output: 12 },
-  { match: /^gemini-3(\.\d+)?-flash/, input: 0.5, cachedInput: 0.05, output: 3 },
-  { match: /^gemini-2\.5-pro/, input: 1.25, cachedInput: 0.125, output: 10 },
-  { match: /^gemini-2\.5-flash-lite/, input: 0.1, cachedInput: 0.01, output: 0.4 },
-  { match: /^gemini-2\.5-flash/, input: 0.3, cachedInput: 0.03, output: 2.5 },
-];
-
 // Gemini CLI checkpoints each session to tmp/<project>/chats/ — monolithic
 // session-*.json up to v0.38, one-record-per-line *.jsonl since v0.39; every
 // model response records its token counts (one API request each, mirroring
@@ -420,7 +409,6 @@ export function parseChatJsonlChunk(text, state) {
 }
 
 function toGeminiUsage(event) {
-  const pricing = MODEL_PRICING.find((entry) => entry.match.test(event.model)) || null;
   const input = Math.max(0, event.input - event.cached) + event.tool;
   const output = event.output + event.thoughts;
 
@@ -430,9 +418,12 @@ function toGeminiUsage(event) {
     output,
     cacheRead: event.cached,
     cacheWrite: 0,
-    cost: pricing
-      ? (input * pricing.input + event.cached * pricing.cachedInput + output * pricing.output) / 1e6
-      : null,
+    cost: calculateModelCost(event.model, {
+      input,
+      output,
+      cacheRead: event.cached,
+      totalInput: event.input + event.tool,
+    }),
   };
 }
 

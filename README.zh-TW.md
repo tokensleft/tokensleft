@@ -44,11 +44,11 @@ tokensleft [providers...] [options]
 - Kimi Code 會讀取 `~/.kimi-code/credentials/kimi-code.json`，並相容舊版 `~/.kimi` 路徑；面板會顯示會員等級、共享額度、並行上限與包含 Kimi K3 在內的可用模型。多把會員金鑰可設為 `KIMI_CODE_API_KEY_1`、`_2` 等，並用 `KIMI_CODE_NAME_1`、`_2` 自訂名稱。原本的單一 `KIMI_CODE_API_KEY` 仍可使用；這些不是 Moonshot 的 `KIMI_API_KEY`。
 - 額度請求不會經過 TokensLeft 服務，只會直連各 Provider 或使用你設定的 proxy；TokensLeft 沒有帳號系統、伺服器、分析或遙測。
 - Codex 的非官方 48 小時重置機率會匿名向 `willcodexquotareset.com` 取得，不會附帶憑證或帳號識別資訊。
-- 本機用量只從電腦上的 CLI 紀錄計算，不會上傳。
+- Claude Code、Codex、Gemini CLI 與 Kimi Code 的本機用量只從電腦上的 CLI 紀錄計算，不會上傳；詳細模式會顯示輸入、快取輸入、輸出，以及有公開價格時的 API 費用估算。
 - 非預期重置歷史只會儲存在本機 `~/.tokensleft/reset-history.json`，內容僅有 Provider、額度項目名稱與偵測時間。
 - OAuth 憑證需要時會安全更新並寫回；使用 `--read-only` 可停用刷新與永久憑證更新。
 
-本機美元金額依公開 API 價格估算，不代表訂閱帳單；未知或不完整價格會明確標示。預測採簡單線性推估，並非保證。
+本機美元金額依公開 API 價格估算，不代表訂閱帳單。價格使用內建的 LiteLLM/models.dev 快照，每日最多更新一次；離線時會沿用上次有效資料。未知或不完整價格會明確標示。預測採簡單線性推估，並非保證。
 
 ## 開發
 

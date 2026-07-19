@@ -57,20 +57,24 @@ test('formatModelTable shows ? for models without pricing', () => {
   const usage = { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, messages: 3, cost: 0, hasCost: false };
   const table = stripBlessedTags(formatModelTable([{ model: 'mystery-model', ...windowsOf(usage) }]));
   assert.match(table, /mystery-model/);
-  assert.match(table, / \? /);
+  assert.match(table, /today.*\?/);
   assert.match(table, /\$0\.00\+\?/);
   assert.match(table, /partial total/);
 });
 
 test('formatModelTable adapts windows and model width to the available cells', () => {
-  const usage = { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, messages: 1, cost: 0.1, hasCost: true };
+  const usage = { input: 5000, output: 7000, cacheRead: 3000, cacheWrite: 2000, messages: 1, cost: 0.1, hasCost: true };
   const model = 'provider/very-long-model-name-version-preview';
   const narrow = stripBlessedTags(formatModelTable([{ model, ...windowsOf(usage) }], { width: 64 }));
   const wide = stripBlessedTags(formatModelTable([{ model, ...windowsOf(usage) }], { width: 120 }));
 
   assert.ok(narrow.split('\n').every((line) => cellWidth(line) <= 64));
-  assert.doesNotMatch(narrow.split('\n')[0], /7d out|30d out/);
+  assert.match(narrow.split('\n')[0], /period\s+in\s+cached in\s+out\s+\$/);
+  assert.doesNotMatch(narrow, /\b7d\b|\b30d\b/);
+  assert.match(narrow, /today\s+7\.0k\s+3\.0k\s+7\.0k\s+\$0\.10/);
   assert.match(wide, /provider\/very-long-model-name/);
+  assert.match(wide, /\b7d\b/);
+  assert.match(wide, /\b30d\b/);
   assert.ok(wide.split('\n').every((line) => cellWidth(line) <= 120));
 });
 

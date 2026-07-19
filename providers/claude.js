@@ -7,6 +7,7 @@ import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { escapeBlessed, formatCountdown, formatDateTime } from '../lib/format.js';
 import { parseJson, parseRetryAfterDate } from '../lib/http.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
+import { calculateModelCost } from '../lib/model-pricing.js';
 import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
@@ -28,16 +29,6 @@ export function resolveRetryAfterAt(value, { now = Date.now(), minimumMs = RATE_
   const serverTime = parsed instanceof Date ? parsed.getTime() : 0;
   return new Date(Math.max(now + minimumMs, serverTime));
 }
-
-// USD per 1M tokens; cache read = 0.1x input, cache write 5m = 1.25x, 1h = 2x
-export const MODEL_PRICING = [
-  { match: /^claude-fable-5/, input: 10, output: 50 },
-  { match: /^claude-mythos-5/, input: 10, output: 50 },
-  { match: /^claude-opus-4/, input: 5, output: 25 },
-  { match: /^claude-sonnet-5/, input: 3, output: 15 },
-  { match: /^claude-sonnet-4/, input: 3, output: 15 },
-  { match: /^claude-haiku-4-5/, input: 1, output: 5 },
-];
 
 export { claudeConfigDir } from '../lib/claude-settings.js';
 
@@ -402,33 +393,39 @@ export function parseTranscriptChunk(text) {
   return { events, remainder };
 }
 
+export function isZaiModel(model) {
+  const normalized = String(model || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^models\//, '');
+
+  return /^(?:glm(?:[-_.]|$)|(?:zai|z-ai|zhipuai)\/+glm(?:[-_.]|$))/.test(normalized);
+}
+
 // Maps a transcript event to the canonical usage-event shape, pricing it at
 // public API rates (cache read = 0.1x input, cache write 5m = 1.25x, 1h = 2x).
 function toClaudeUsage(event) {
-  const pricing = MODEL_PRICING.find((entry) => entry.match.test(event.model)) || null;
-
   return {
     model: event.model,
     input: event.input,
     output: event.output,
     cacheRead: event.cacheRead,
     cacheWrite: event.cache5m + event.cache1h,
-    cost: pricing
-      ? (
-        event.input * pricing.input +
-        event.output * pricing.output +
-        event.cacheRead * pricing.input * 0.1 +
-        event.cache5m * pricing.input * 1.25 +
-        event.cache1h * pricing.input * 2
-      ) / 1e6
-      : null,
+    cost: calculateModelCost(event.model, {
+      input: event.input,
+      output: event.output,
+      cacheRead: event.cacheRead,
+      cacheWrite5m: event.cache5m,
+      cacheWrite1h: event.cache1h,
+      totalInput: event.input + event.cacheRead + event.cache5m + event.cache1h,
+    }),
   };
 }
 
 // Incremental scanner over ~/.claude/projects/**/*.jsonl transcripts —
 // recursive, so subagent transcripts (projects/<slug>/<session>/subagents/…)
 // count too.
-export function createTranscriptScanner(configDir) {
+export function createTranscriptScanner(configDir, { includeModel = () => true } = {}) {
   const projectsDir = join(configDir, 'projects');
 
   const listFiles = async () => {
@@ -447,7 +444,13 @@ export function createTranscriptScanner(configDir) {
 
   return createLocalUsageScanner({
     listFiles,
-    refreshFile: jsonlRefresher(parseTranscriptChunk),
+    refreshFile: jsonlRefresher((text) => {
+      const parsed = parseTranscriptChunk(text);
+      return {
+        ...parsed,
+        events: parsed.events.filter((event) => includeModel(event.model)),
+      };
+    }),
     toUsage: toClaudeUsage,
   });
 }
@@ -526,7 +529,9 @@ export async function createClaudeProvider(env) {
     return null;
   }
 
-  const scanner = createTranscriptScanner(claudeConfigDir(env));
+  const scanner = createTranscriptScanner(claudeConfigDir(env), {
+    includeModel: (model) => !isZaiModel(model),
+  });
   const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 
   return {

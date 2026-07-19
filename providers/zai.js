@@ -3,8 +3,10 @@ import { readRefreshMs, splitCsv } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { escapeBlessed, formatNumber, jsonPreview, maskKey } from '../lib/format.js';
 import { fetchJsonResult } from '../lib/http.js';
+import { renderLocalUsage } from '../lib/local-usage.js';
 import { COLOR } from '../lib/palette.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
+import { createTranscriptScanner, isZaiModel } from './claude.js';
 
 const BASE_URL = 'https://api.z.ai';
 const SUBSCRIPTION_URL = `${BASE_URL}/api/biz/subscription/list`;
@@ -263,6 +265,28 @@ export function renderAccountBlock(result, width, mode = 'detail') {
   return lines.join('\n');
 }
 
+export const ZAI_LOCAL_OPTS = {
+  source: 'Claude Code transcripts',
+  shorten: (model) => model.replace(/^(?:zai|z-ai|zhipuai)\/+/, ''),
+  tone: () => 'cyan',
+  note: 'in includes cache writes; cached in = cache reads; $ estimates z.ai API cost, not subscription billing',
+};
+
+export function renderZaiSnapshot(snapshot, width, mode = 'detail') {
+  if (snapshot.fatal) {
+    return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
+  }
+
+  const compact = mode === 'compact';
+  const sections = snapshot.results.map((result) => renderAccountBlock(result, width, mode));
+
+  if (!compact && snapshot.local?.ok && snapshot.local.models.length > 0) {
+    sections.push(renderLocalUsage(snapshot.local, { ...ZAI_LOCAL_OPTS, width }));
+  }
+
+  return sections.join(compact ? '\n' : '\n\n');
+}
+
 // Appends keys auto-discovered from Claude Code settings profiles whose base
 // URL points at the given host, skipping ones already configured in .env.
 export async function appendDiscoveredAccounts(accounts, env, hostFragment, disableVar) {
@@ -294,23 +318,25 @@ export async function createZaiProvider(env) {
     return null;
   }
 
+  const scanner = createTranscriptScanner(claudeConfigDir(env), {
+    includeModel: isZaiModel,
+  });
+
   return {
     id: 'zai',
     title: 'z.ai',
     refreshMs: readRefreshMs(env, ['ZAI_REFRESH_SECONDS', 'ZAI_REFRESH_SEC'], DEFAULT_REFRESH_MS),
 
     async fetch() {
-      const results = await Promise.all(accounts.map((account) => fetchAccountUsage(account)));
-      return { results };
+      const [local, results] = await Promise.all([
+        scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
+        Promise.all(accounts.map((account) => fetchAccountUsage(account))),
+      ]);
+      return { results, local };
     },
 
     render(snapshot, width, mode = 'detail') {
-      if (snapshot.fatal) {
-        return `  {${COLOR.danger}-fg}${escapeBlessed(snapshot.fatal)}{/${COLOR.danger}-fg}`;
-      }
-
-      const joiner = mode === 'compact' ? '\n' : '\n\n';
-      return snapshot.results.map((result) => renderAccountBlock(result, width, mode)).join(joiner);
+      return renderZaiSnapshot(snapshot, width, mode);
     },
 
     headerStatus(snapshot) {

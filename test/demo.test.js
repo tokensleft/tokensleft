@@ -85,6 +85,8 @@ test('demo fixtures follow current live provider shapes', async () => {
   assert.equal(snapshots.codex.items[1].details.length, 5);
   assert.equal(snapshots.codex.items[2].value, '68% · unofficial');
   assert.deepEqual(snapshots.codex.local.models.map((entry) => entry.model), ['gpt-5.5', 'gpt-5.6-sol', 'codex-auto-review']);
+  assert.ok(snapshots.codex.local.models[0].week.input > 0);
+  assert.ok(snapshots.codex.local.models[0].week.cacheRead > 0);
 
   assert.equal(snapshots.gemini.plan, 'Free');
   assert.deepEqual(snapshots.gemini.items.map((item) => [item.label, item.percent]), [['Pro', 100], ['Flash', 0]]);
@@ -98,11 +100,14 @@ test('demo fixtures follow current live provider shapes', async () => {
     'Models',
   ]);
   assert.deepEqual(snapshots.kimi.items.filter((item) => item.kind === 'usage').map((item) => item.percent), [34, 38]);
+  assert.deepEqual(snapshots.kimi.local.models.map((entry) => entry.model), ['kimi-code/k3', 'kimi-code/kimi-for-coding']);
+  assert.equal(snapshots.kimi.local.models[0].today.hasCost, true);
   const kimiDetail = stripBlessedTags(providers.kimi.render(snapshots.kimi, 120, 'detail'));
   const kimiCompact = stripBlessedTags(providers.kimi.render(snapshots.kimi, 120, 'compact'));
   assert.match(kimiDetail, /Allegretto[\s\S]*Shared quota[\s\S]*Parallel[\s\S]*Models/);
+  assert.match(kimiDetail, /Local usage by model[\s\S]*cached in[\s\S]*k3/);
   assert.match(kimiCompact, /Allegretto/);
-  assert.doesNotMatch(kimiCompact, /Shared quota|Parallel|Models/);
+  assert.doesNotMatch(kimiCompact, /Shared quota|Parallel|Models|Local usage by model/);
   assert.match(kimiCompact, /Weekly limit[\s\S]*5h limit[\s\S]*Extra Usage/);
   assert.deepEqual(snapshots.antigravity.items.map((item) => [item.label, item.percent]), [
     ['Gemini Pro', 0],

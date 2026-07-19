@@ -43,11 +43,11 @@ tokensleft [providers...] [options]
 - 自动读取本地 CLI 的现有登录信息；手动密钥可放在 `~/.tokensleft/.env` 或 `./.env`，完整变量见 [.env.example](.env.example)。
 - 额度请求不会经过 TokensLeft 服务，只会直连各 Provider 或使用你配置的 proxy；TokensLeft 没有账号系统、服务器、分析或遥测。
 - Codex 的非官方 48 小时重置概率会匿名从 `willcodexquotareset.com` 获取，不会附带凭据或账号标识信息。
-- 本地用量仅从电脑上的 CLI 日志计算，不会上传。
+- Claude Code、Codex、Gemini CLI 与 Kimi Code 的本地用量仅从电脑上的 CLI 日志计算，不会上传；详细模式会显示输入、缓存输入、输出，以及有公开价格时的 API 费用估算。
 - 非预期重置历史仅存储在本地 `~/.tokensleft/reset-history.json`，内容只有 Provider、额度项目名称和检测时间。
 - OAuth 凭据会在需要时安全刷新并写回；使用 `--read-only` 可禁用刷新和持久凭据更新。
 
-本地美元金额依据公开 API 价格估算，不代表订阅账单；未知或不完整价格会明确标记。预测采用简单线性推算，并非保证。
+本地美元金额依据公开 API 价格估算，不代表订阅账单。价格使用内置的 LiteLLM/models.dev 快照，每天最多更新一次；离线时会沿用上次有效数据。未知或不完整价格会明确标记。预测采用简单线性推算，并非保证。
 
 ## 开发
 
