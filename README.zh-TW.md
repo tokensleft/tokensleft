@@ -41,6 +41,7 @@ tokensleft [providers...] [options]
 ## 憑證與隱私
 
 - 自動讀取本機 CLI 的既有登入資料；手動金鑰可放在 `~/.tokensleft/.env` 或 `./.env`，完整變數請見 [.env.example](.env.example)。
+- Claude Code 登入資料會從 `~/.claude/.credentials.json` 讀取；macOS 上則改讀 login Keychain 中的 `Claude Code-credentials` 項目，首次讀取時系統會詢問授權。Keychain 憑證只讀不寫，不會寫回。完全沒有憑證時，仍會顯示來自 Claude Code 轉錄檔的本機用量。
 - Kimi Code 會讀取 `~/.kimi-code/credentials/kimi-code.json`，並相容舊版 `~/.kimi` 路徑；面板會顯示會員等級、共享額度、並行上限與包含 Kimi K3 在內的可用模型。多把會員金鑰可設為 `KIMI_CODE_API_KEY_1`、`_2` 等，並用 `KIMI_CODE_NAME_1`、`_2` 自訂名稱。原本的單一 `KIMI_CODE_API_KEY` 仍可使用；這些不是 Moonshot 的 `KIMI_API_KEY`。
 - 額度請求不會經過 TokensLeft 服務，只會直連各 Provider 或使用你設定的 proxy；TokensLeft 沒有帳號系統、伺服器、分析或遙測。
 - Codex 的非官方 48 小時重置機率會匿名向 `willcodexquotareset.com` 取得，不會附帶憑證或帳號識別資訊。

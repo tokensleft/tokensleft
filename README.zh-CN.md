@@ -41,6 +41,7 @@ tokensleft [providers...] [options]
 ## 凭据与隐私
 
 - 自动读取本地 CLI 的现有登录信息；手动密钥可放在 `~/.tokensleft/.env` 或 `./.env`，完整变量见 [.env.example](.env.example)。
+- Claude Code 登录信息会从 `~/.claude/.credentials.json` 读取；macOS 上则改读 login Keychain 中的 `Claude Code-credentials` 项目，首次读取时系统会询问授权。Keychain 凭据只读不写，不会写回。完全没有凭据时，仍会显示来自 Claude Code 转录文件的本地用量。
 - 额度请求不会经过 TokensLeft 服务，只会直连各 Provider 或使用你配置的 proxy；TokensLeft 没有账号系统、服务器、分析或遥测。
 - Codex 的非官方 48 小时重置概率会匿名从 `willcodexquotareset.com` 获取，不会附带凭据或账号标识信息。
 - Claude Code、Codex、Gemini CLI 与 Kimi Code 的本地用量仅从电脑上的 CLI 日志计算，不会上传；详细模式会显示输入、缓存输入、输出，以及有公开价格时的 API 费用估算。

@@ -1,4 +1,4 @@
-<!-- release: v0.8.1 -->
+<!-- release: v0.8.2 -->
 
-- Local usage now shows input, cached input, output, and estimated API cost.
-- Model-aware pricing now accurately estimates costs across supported providers.
+- Claude Code is now detected on macOS, where the login Keychain holds the credentials instead of `~/.claude/.credentials.json`.
+- Local usage from Claude Code transcripts is now shown even when no credentials are found.
