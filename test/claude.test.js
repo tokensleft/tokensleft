@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import {
   buildClaudeLimitItems,
+  createClaudeProvider,
   createTranscriptScanner,
   isZaiModel,
   parseTranscriptChunk,
+  readClaudeAccounts,
   renderClaudeSnapshot,
   resolveRetryAfterAt,
 } from '../providers/claude.js';
@@ -182,4 +184,160 @@ test('transcript scanner reports missing projects dir', async () => {
   const result = await scanner.scan();
   assert.equal(result.ok, false);
   assert.deepEqual(result.models, []);
+});
+
+// --- credential discovery ---------------------------------------------------------
+
+function keychainStub(secret, calls = []) {
+  return {
+    exists: async (service) => {
+      calls.push(['exists', service]);
+      return secret !== null;
+    },
+    read: async (service) => {
+      calls.push(['read', service]);
+      return secret ?? '';
+    },
+  };
+}
+
+function keychainSecret(overrides = {}) {
+  return JSON.stringify({
+    claudeAiOauth: {
+      accessToken: 'keychain-access-token',
+      refreshToken: 'keychain-refresh-token',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+      subscriptionType: 'max',
+      rateLimitTier: 'default_max_20x',
+      ...overrides,
+    },
+  });
+}
+
+async function emptyConfigDir(t, prefix) {
+  const configDir = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => rm(configDir, { recursive: true, force: true }));
+  return configDir;
+}
+
+test('macOS reads credentials from the Keychain when .credentials.json is absent', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-');
+  const calls = [];
+  const accounts = await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret(), calls),
+  });
+
+  assert.equal(accounts.length, 1);
+  assert.equal(accounts[0].storage, 'keychain');
+  assert.equal(accounts[0].keychainService, 'Claude Code-credentials');
+  // Detection must not touch the secret — reading it is what prompts on macOS.
+  assert.deepEqual(calls, [['exists', 'Claude Code-credentials']]);
+});
+
+test('Keychain lookup is skipped off macOS, when disabled, and when the file wins', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-skip-');
+  const keychain = keychainStub(keychainSecret());
+  const read = (env, osPlatform = 'darwin') => readClaudeAccounts(
+    { CLAUDE_CONFIG_DIR: configDir, ...env },
+    { osPlatform, keychain },
+  );
+
+  assert.deepEqual(await read({}, 'win32'), []);
+  assert.deepEqual(await read({}, 'linux'), []);
+  assert.deepEqual(await read({ CLAUDE_DISABLE_KEYCHAIN: '1' }), []);
+  assert.deepEqual(await read({ CLAUDE_DISABLE_SYSTEM_KEY: '1' }), []);
+
+  await writeFile(join(configDir, '.credentials.json'), keychainSecret());
+  const [account] = await read({});
+  assert.equal(account.storage, 'file');
+});
+
+test('Keychain credentials authenticate the usage request', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-fetch-');
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), authorization: options?.headers?.Authorization });
+    return new Response(JSON.stringify(SAMPLE_USAGE), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret()),
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].ok, true);
+  assert.equal(snapshot.results[0].plan, 'max / max_20x');
+  assert.equal(snapshot.results[0].items.length, 3);
+  assert.deepEqual(requests, [{
+    url: 'https://api.anthropic.com/api/oauth/usage',
+    authorization: 'Bearer keychain-access-token',
+  }]);
+});
+
+test('an expired Keychain token is reported, never redeemed behind the Keychain', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-expired-');
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    throw new Error('a Keychain account must not refresh or request with an expired token');
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 })),
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].status, 'EXPIRED');
+  assert.match(snapshot.results[0].error, /Keychain/);
+  assert.deepEqual(calls, []);
+});
+
+test('a denied Keychain prompt reports the item, not a crash', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-denied-');
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: { exists: async () => true, read: async () => '' },
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].status, 'CRED');
+  assert.match(snapshot.results[0].error, /Keychain item "Claude Code-credentials"/);
+});
+
+test('local transcript usage keeps the provider alive without credentials', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-local-only-');
+  const projectDir = join(configDir, 'projects', 'proj-a');
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(join(projectDir, 'session.jsonl'), transcriptLine({ id: 'msg_1', t: Date.now() }));
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_DISABLE_SYSTEM_KEY: '1' });
+  assert.ok(provider, 'transcripts alone must keep the Claude provider detected');
+
+  const snapshot = await provider.fetch();
+  assert.deepEqual(snapshot.results, []);
+  assert.deepEqual(snapshot.local.models.map((entry) => entry.model), ['claude-fable-5']);
+  assert.deepEqual(provider.headerStatus(snapshot), { ok: true, text: 'LOCAL' });
+  assert.deepEqual(provider.alertItems(snapshot), []);
+
+  const detail = stripBlessedTags(provider.render(snapshot, 100, 'detail'));
+  const compact = stripBlessedTags(provider.render(snapshot, 100, 'compact'));
+  assert.match(detail, /Local usage by model/);
+  assert.match(detail, /No account credentials/);
+  assert.match(compact, /No account credentials/);
+});
+
+test('no credentials and no local usage leaves the provider undetected', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-undetected-');
+  const env = { CLAUDE_CONFIG_DIR: configDir, CLAUDE_DISABLE_SYSTEM_KEY: '1' };
+  assert.equal(await createClaudeProvider(env), null);
+
+  await mkdir(join(configDir, 'projects'), { recursive: true });
+  assert.equal(await createClaudeProvider(env), null, 'an empty projects dir is not usage');
 });

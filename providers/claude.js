@@ -1,10 +1,12 @@
+import { execFile } from 'node:child_process';
 import { access, readFile, readdir } from 'node:fs/promises';
+import { platform } from 'node:os';
 import { join } from 'node:path';
 import { claudeConfigDir } from '../lib/claude-settings.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed, formatCountdown, formatDateTime } from '../lib/format.js';
+import { escapeBlessed, formatCountdown, formatDateTime, truncateTagged } from '../lib/format.js';
 import { parseJson, parseRetryAfterDate } from '../lib/http.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { calculateModelCost } from '../lib/model-pricing.js';
@@ -32,23 +34,61 @@ export function resolveRetryAfterAt(value, { now = Date.now(), minimumMs = RATE_
 
 export { claudeConfigDir } from '../lib/claude-settings.js';
 
+// On macOS, Claude Code stores its OAuth credentials in the login Keychain
+// instead of ~/.claude/.credentials.json — the item holds exactly the JSON the
+// file would have. Without this fallback the provider looks logged out on
+// every Mac.
+export const KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+function securityOutput(args) {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/security', args, { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      resolve(error ? '' : String(stdout));
+    });
+  });
+}
+
+export const keychainCredentials = {
+  // Attributes only: listing an item never touches its secret, so macOS does
+  // not raise an access prompt just because tokensleft is looking for one.
+  exists: (service) => securityOutput(['find-generic-password', '-s', service])
+    .then((out) => out.trim().length > 0),
+  // Reading the data is what triggers "security wants to use your confidential
+  // information stored in Claude Code-credentials"; "Always Allow" makes it a
+  // one-time prompt. Denying just yields empty output, handled as a bad item.
+  read: (service) => securityOutput(['find-generic-password', '-s', service, '-w'])
+    .then((out) => out.trim()),
+};
+
 // Accounts: the system key is auto-detected from Claude Code's credentials
-// file (re-read on every refresh — Claude Code rotates the token); manual
-// keys come from CLAUDE_CODE_OAUTH_TOKEN or CLAUDE_TOKEN_1..N in .env.
-export async function readClaudeAccounts(env) {
+// file — or, on macOS, its Keychain item — re-read on every refresh because
+// Claude Code rotates the token; manual keys come from CLAUDE_CODE_OAUTH_TOKEN
+// or CLAUDE_TOKEN_1..N in .env.
+export async function readClaudeAccounts(env, { osPlatform = platform(), keychain = keychainCredentials } = {}) {
   const accounts = [];
   const configDir = claudeConfigDir(env);
   const disableSystem = /^(1|true|yes)$/i.test(env.CLAUDE_DISABLE_SYSTEM_KEY || '');
+  const disableKeychain = /^(1|true|yes)$/i.test(env.CLAUDE_DISABLE_KEYCHAIN || '');
 
   if (!disableSystem) {
     const credentialsPath = join(configDir, '.credentials.json');
     const exists = await access(credentialsPath).then(() => true, () => false);
+    const keychainService = env.CLAUDE_KEYCHAIN_SERVICE || KEYCHAIN_SERVICE;
 
     if (exists) {
       accounts.push({
         name: env.CLAUDE_SYSTEM_NAME || 'system',
         source: 'system',
+        storage: 'file',
         credentialsPath,
+      });
+    } else if (osPlatform === 'darwin' && !disableKeychain && await keychain.exists(keychainService)) {
+      accounts.push({
+        name: env.CLAUDE_SYSTEM_NAME || 'system',
+        source: 'system',
+        storage: 'keychain',
+        keychainService,
+        readCredentials: () => keychain.read(keychainService),
       });
     }
   }
@@ -80,17 +120,24 @@ export async function readClaudeAccounts(env) {
 
 async function resolveCredentials(account, readOnly = false) {
   if (account.source === 'manual') {
-    return { token: account.token, plan: '', expiresAt: null, refresh: null, readOnly };
+    return { token: account.token, plan: '', expiresAt: null, refresh: null, readOnly, storage: 'env' };
   }
 
-  const raw = await readFile(account.credentialsPath, 'utf8').catch((error) => {
-    throw new Error(`cannot read credentials: ${error.message}`);
-  });
+  const fromKeychain = account.storage === 'keychain';
+  const raw = fromKeychain
+    ? await account.readCredentials().catch((error) => {
+      throw new Error(`cannot read Keychain item "${account.keychainService}": ${error.message}`);
+    })
+    : await readFile(account.credentialsPath, 'utf8').catch((error) => {
+      throw new Error(`cannot read credentials: ${error.message}`);
+    });
   const parsed = parseJson(raw);
   const oauth = parsed?.claudeAiOauth;
 
   if (!oauth?.accessToken) {
-    throw new Error('no accessToken in .credentials.json — run `claude` and /login');
+    throw new Error(fromKeychain
+      ? `no accessToken in Keychain item "${account.keychainService}" — allow the Keychain access prompt, or run \`claude\` and /login`
+      : 'no accessToken in .credentials.json — run `claude` and /login');
   }
 
   const credentialState = { raw, parsed, oauth };
@@ -99,10 +146,14 @@ async function resolveCredentials(account, readOnly = false) {
     token: oauth.accessToken,
     plan: [oauth.subscriptionType, (oauth.rateLimitTier || '').replace(/^default_/, '')].filter(Boolean).join(' / '),
     expiresAt: Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
-    refresh: oauth.refreshToken && !readOnly
+    // Keychain credentials are read-only: redeeming the refresh token can
+    // rotate it, and tokensleft will not write the replacement back into the
+    // user's Keychain — losing that rotation would log them out of Claude Code.
+    refresh: oauth.refreshToken && !readOnly && !fromKeychain
       ? () => refreshOAuthToken(account.credentialsPath, credentialState)
       : null,
     readOnly,
+    storage: account.storage || 'file',
   };
 }
 
@@ -244,6 +295,16 @@ export function formatSpend(spend) {
   return `$${amount} (${Math.round(spend.percent || 0)}%)`;
 }
 
+function expiredTokenMessage({ readOnly, storage }) {
+  if (storage === 'keychain') {
+    return 'OAuth token expired. tokensleft never writes to the macOS Keychain — run any prompt in Claude Code, or /login again.';
+  }
+
+  return readOnly
+    ? 'OAuth token expired in read-only mode. Run any prompt in Claude Code, or /login again.'
+    : 'OAuth token expired and no refresh token available. Run any prompt in Claude Code, or /login again.';
+}
+
 async function fetchAccountUsage(account, seenTokens, readOnly = false) {
   const startedAt = Date.now();
   let credentials;
@@ -278,9 +339,7 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
       plan: credentials.plan,
       ok: false,
       status: 'EXPIRED',
-      error: credentials.readOnly
-        ? 'OAuth token expired in read-only mode. Run any prompt in Claude Code, or /login again.'
-        : 'OAuth token expired and no refresh token available. Run any prompt in Claude Code, or /login again.',
+      error: expiredTokenMessage(credentials),
       ms: Date.now() - startedAt,
       items: [],
     };
@@ -495,6 +554,8 @@ function renderAccountBlock(result, width, mode = 'detail') {
   return lines.join('\n');
 }
 
+const LOCAL_ONLY_NOTE = 'No account credentials — local usage only; run `claude` and /login for quotas.';
+
 export const CLAUDE_LOCAL_OPTS = {
   source: 'transcripts',
   shorten: (model) => model.replace(/^claude-/, '').replace(/-\d{8}$/, ''),
@@ -513,6 +574,15 @@ export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
     .filter((result) => result.status !== 'DUP')
     .map((result) => renderAccountBlock(result, width, mode));
 
+  // Local-usage-only mode: transcripts on disk but no usable credentials, so
+  // say why the quota bars are missing instead of rendering an empty panel.
+  if (sections.length === 0) {
+    sections.push(truncateTagged(
+      `  {${COLOR.warning}-fg}${escapeBlessed(LOCAL_ONLY_NOTE)}{/${COLOR.warning}-fg}`,
+      width,
+    ));
+  }
+
   if (!compact) {
     sections.push(renderLocalUsage(snapshot.local, { ...CLAUDE_LOCAL_OPTS, width }));
   }
@@ -522,16 +592,24 @@ export function renderClaudeSnapshot(snapshot, width, mode = 'detail') {
 
 // --- provider ---------------------------------------------------------------------
 
-export async function createClaudeProvider(env) {
-  const accounts = await readClaudeAccounts(env);
-
-  if (accounts.length === 0) {
-    return null;
-  }
-
+export async function createClaudeProvider(env, options = {}) {
+  const accounts = await readClaudeAccounts(env, options);
   const scanner = createTranscriptScanner(claudeConfigDir(env), {
     includeModel: (model) => !isZaiModel(model),
   });
+
+  // No credentials is not the same as nothing to show: the transcripts on disk
+  // are a full local usage history. Keep the provider alive whenever they hold
+  // real usage (Keychain access denied, logged out, CLAUDE_DISABLE_SYSTEM_KEY);
+  // the scan is cached, so the first fetch reuses this work.
+  if (accounts.length === 0) {
+    const local = await scanner.scan().catch(() => ({ ok: false, models: [] }));
+
+    if (!local.ok || local.models.length === 0) {
+      return null;
+    }
+  }
+
   const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 
   return {
@@ -563,6 +641,11 @@ export async function createClaudeProvider(env) {
       }
 
       const counted = snapshot.results.filter((result) => result.status !== 'DUP');
+
+      if (counted.length === 0) {
+        return { ok: true, text: 'LOCAL' };
+      }
+
       const okCount = counted.filter((result) => result.ok).length;
       return { ok: okCount === counted.length, text: `${okCount}/${counted.length} OK` };
     },
