@@ -11,6 +11,7 @@ import {
   keychainCredentials,
   keychainLookups,
   keychainServiceCandidates,
+  keychainWriteArgs,
   parseKeychainCredentials,
   parseTranscriptChunk,
   readClaudeAccounts,
@@ -195,16 +196,45 @@ test('transcript scanner reports missing projects dir', async () => {
 // Stands in for the `security` calls: `secret` is what the item holds (null
 // for "no such item"), `calls` records probe/read plus the exact argv so tests
 // can assert the account-scoped lookup runs first.
-function keychainStub(secret, calls = []) {
+function keychainStub(secret, calls = [], { onWrite } = {}) {
+  const item = { value: secret };
+
   return {
     find: async (lookups, { secret: wantSecret = false } = {}) => {
       calls.push([wantSecret ? 'read' : 'probe', lookups.map((lookup) => lookup.args.join(' '))]);
 
-      return secret === null
+      return item.value === null
         ? { found: false }
-        : { found: true, value: wantSecret ? secret : '', service: lookups[0].service };
+        : { found: true, value: wantSecret ? item.value : '', lookup: lookups[0] };
     },
+    write: async (lookup, value) => {
+      calls.push(['write', lookup, value]);
+
+      if (onWrite) {
+        await onWrite();
+      }
+
+      item.value = value;
+    },
+    item,
   };
+}
+
+// Mocks both endpoints the refresh path touches: the OAuth token exchange and
+// the usage call, recording every bearer token the usage call was given.
+function mockRefreshAndUsage(t, { refresh = { access_token: 'rotated-access', refresh_token: 'rotated-refresh', expires_in: 28800 }, refreshStatus = 200 } = {}) {
+  const originalFetch = globalThis.fetch;
+  const bearers = [];
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes('/oauth/token')) {
+      return new Response(JSON.stringify(refresh), { status: refreshStatus, headers: { 'content-type': 'application/json' } });
+    }
+
+    bearers.push(options?.headers?.Authorization);
+    return new Response(JSON.stringify(SAMPLE_USAGE), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  return bearers;
 }
 
 function keychainSecret(overrides = {}) {
@@ -339,25 +369,148 @@ test('Keychain credentials authenticate the usage request', async (t) => {
   }]);
 });
 
-test('an expired Keychain token is reported, never redeemed behind the Keychain', async (t) => {
-  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-expired-');
-  const originalFetch = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    throw new Error('a Keychain account must not refresh or request with an expired token');
-  };
-  t.after(() => { globalThis.fetch = originalFetch; });
+test('the write mirrors how the item was found, and always updates in place', () => {
+  assert.deepEqual(
+    keychainWriteArgs({ service: 'Claude Code-credentials', account: 'ada' }, '{"a":1}'),
+    ['add-generic-password', '-U', '-a', 'ada', '-s', 'Claude Code-credentials', '-w', '{"a":1}'],
+  );
 
-  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+  // An item found without `-a` must be written back without it: adding the
+  // account would create a second entry instead of updating Claude Code's.
+  assert.deepEqual(
+    keychainWriteArgs({ service: 'Claude Code-credentials', account: '' }, '{"a":1}'),
+    ['add-generic-password', '-U', '-s', 'Claude Code-credentials', '-w', '{"a":1}'],
+  );
+});
+
+test('an expiring Keychain token is refreshed and written back to the same item', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-writeback-');
+  const calls = [];
+  const keychain = keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 }), calls);
+  const bearers = mockRefreshAndUsage(t);
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir, USER: 'ada' }, {
     osPlatform: 'darwin',
-    keychain: keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 })),
+    keychain,
   });
   const snapshot = await provider.fetch();
 
-  assert.equal(snapshot.results[0].status, 'EXPIRED');
-  assert.match(snapshot.results[0].error, /Keychain/);
-  assert.deepEqual(calls, []);
+  assert.equal(snapshot.results[0].ok, true);
+  assert.equal(snapshot.results[0].warning, '');
+  assert.deepEqual(bearers, ['Bearer rotated-access']);
+
+  const [, lookup, written] = calls.find(([kind]) => kind === 'write');
+  // Written back through the same account-scoped lookup the read used.
+  assert.equal(lookup.account, 'ada');
+  assert.equal(lookup.args[0], 'find-generic-password');
+
+  const stored = JSON.parse(written).claudeAiOauth;
+  assert.equal(stored.accessToken, 'rotated-access');
+  // The rotated refresh token is the whole point: dropping it would leave the
+  // next run redeeming a server-invalidated one.
+  assert.equal(stored.refreshToken, 'rotated-refresh');
+  assert.ok(stored.expiresAt > Date.now());
+  assert.equal(JSON.parse(keychain.item.value).claudeAiOauth.accessToken, 'rotated-access');
+});
+
+test('a Keychain write failure keeps the usage bars and surfaces a warning', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-writefail-');
+  const keychain = keychainStub(
+    keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 }),
+    [],
+    { onWrite: () => { throw new Error('User interaction is not allowed.'); } },
+  );
+  const bearers = mockRefreshAndUsage(t);
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, { osPlatform: 'darwin', keychain });
+  const snapshot = await provider.fetch();
+
+  // The refreshed token still works for this run, so the fetch must succeed.
+  assert.equal(snapshot.results[0].ok, true);
+  assert.deepEqual(bearers, ['Bearer rotated-access']);
+  assert.match(snapshot.results[0].warning, /could not save the refreshed credentials: User interaction is not allowed\./);
+  assert.match(
+    stripBlessedTags(renderClaudeSnapshot(snapshot, 100, 'detail')),
+    /could not save the refreshed credentials/,
+  );
+});
+
+test('a token rotated underneath us is not clobbered', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-race-');
+  const keychain = keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 }));
+  // Claude Code rewrites the item between our read and our write.
+  const original = keychain.find;
+  let reads = 0;
+  keychain.find = async (lookups, options) => {
+    const result = await original(lookups, options);
+
+    if (options?.secret && ++reads > 1) {
+      return { ...result, value: keychainSecret({ accessToken: 'claude-code-rotated' }) };
+    }
+
+    return result;
+  };
+  const writes = [];
+  keychain.write = async (...args) => { writes.push(args); };
+  const bearers = mockRefreshAndUsage(t);
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, { osPlatform: 'darwin', keychain });
+  const snapshot = await provider.fetch();
+
+  assert.deepEqual(writes, [], 'must not overwrite a newer credential');
+  assert.equal(snapshot.results[0].ok, true);
+  assert.deepEqual(bearers, ['Bearer rotated-access']);
+  assert.match(snapshot.results[0].warning, /credentials changed underneath/);
+});
+
+test('a logout between read and write is not undone', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-logout-');
+  const keychain = keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 }));
+  const original = keychain.find;
+  let reads = 0;
+  keychain.find = async (lookups, options) => (options?.secret && ++reads > 1
+    ? { found: false }
+    : original(lookups, options));
+  const writes = [];
+  keychain.write = async (...args) => { writes.push(args); };
+  mockRefreshAndUsage(t);
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, { osPlatform: 'darwin', keychain });
+  const snapshot = await provider.fetch();
+
+  // `add-generic-password -U` creates a missing item, so a vanished entry must
+  // block the write instead of resurrecting a login the user just removed.
+  assert.deepEqual(writes, []);
+  assert.equal(snapshot.results[0].ok, true);
+  assert.match(snapshot.results[0].warning, /credentials changed underneath/);
+});
+
+test('only invalid_grant means re-login; other refresh rejections do not', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-refresh-reject-');
+  const expiring = () => keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 });
+
+  const dead = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(expiring()),
+  });
+  mockRefreshAndUsage(t, { refresh: { error: 'invalid_grant' }, refreshStatus: 400 });
+  const deadSnapshot = await dead.fetch();
+
+  assert.equal(deadSnapshot.results[0].status, 'EXPIRED');
+  assert.match(deadSnapshot.results[0].error, /invalid_grant.*\/login again/);
+
+  // A WAF or proxy answering 400 is not an expired login, and telling the user
+  // to /login again cannot fix a network appliance.
+  const blocked = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(expiring()),
+  });
+  mockRefreshAndUsage(t, { refresh: { message: '<html>blocked</html>' }, refreshStatus: 400 });
+  const blockedSnapshot = await blocked.fetch();
+
+  assert.equal(blockedSnapshot.results[0].ok, true);
+  assert.match(blockedSnapshot.results[0].warning, /token refresh got HTTP 400 — check your network or proxy/);
+  assert.doesNotMatch(blockedSnapshot.results[0].warning, /login again/);
 });
 
 test('an item holding no accessToken is reported, not crashed on', async (t) => {

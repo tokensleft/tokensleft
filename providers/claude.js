@@ -67,13 +67,13 @@ function runSecurity(args) {
   return new Promise((resolve) => {
     execFile('/usr/bin/security', args, { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (!error) {
-        resolve({ found: true, value: String(stdout).trim() });
+        resolve({ ok: true, value: String(stdout).trim() });
         return;
       }
 
       resolve(error.code === KEYCHAIN_ITEM_NOT_FOUND
-        ? { found: false }
-        : { found: false, error: describeSecurityFailure(error, stderr) });
+        ? { ok: false, notFound: true }
+        : { ok: false, error: describeSecurityFailure(error, stderr) });
     });
   });
 }
@@ -105,25 +105,26 @@ export function keychainLookups(env) {
 
   return keychainServiceCandidates(env).flatMap((service) => (account
     ? [
-      { service, args: ['find-generic-password', '-a', account, '-s', service] },
-      { service, args: ['find-generic-password', '-s', service] },
+      { service, account, args: ['find-generic-password', '-a', account, '-s', service] },
+      { service, account: '', args: ['find-generic-password', '-s', service] },
     ]
-    : [{ service, args: ['find-generic-password', '-s', service] }]));
+    : [{ service, account: '', args: ['find-generic-password', '-s', service] }]));
 }
 
 export const keychainCredentials = {
   // `secret: false` reads attributes only, which never touches the stored data
   // and so never raises the macOS access prompt — that is what makes detection
   // silent for people who have no Claude Code login at all. `secret: true` adds
-  // `-w` and is the call that can prompt.
+  // `-w` and is the call that can prompt. The winning lookup comes back with the
+  // hit so a later write can mirror it exactly.
   async find(lookups, { secret = false } = {}) {
     let failure = '';
 
     for (const lookup of lookups) {
       const result = await runSecurity(secret ? [...lookup.args, '-w'] : lookup.args);
 
-      if (result.found) {
-        return { found: true, value: result.value, service: lookup.service };
+      if (result.ok) {
+        return { found: true, value: result.value, lookup };
       }
 
       if (result.error && !failure) {
@@ -133,7 +134,33 @@ export const keychainCredentials = {
 
     return { found: false, error: failure };
   },
+
+  // Updates the item in place (`-U`); without it `security` refuses to touch an
+  // existing entry. The account must match how the item was FOUND: writing an
+  // account-scoped item back without `-a` creates a second entry instead of
+  // updating Claude Code's, leaving the two tools on divergent tokens.
+  //
+  // The value goes on the command line, so it is briefly visible to `ps` — the
+  // same trade-off openusage makes, since `security` has no way to take the
+  // secret on stdin.
+  async write(lookup, value) {
+    const result = await runSecurity(keychainWriteArgs(lookup, value));
+
+    if (!result.ok) {
+      throw new Error(result.error || 'security refused to update the Keychain item');
+    }
+  },
 };
+
+export function keychainWriteArgs(lookup, value) {
+  return [
+    'add-generic-password',
+    '-U',
+    ...(lookup.account ? ['-a', lookup.account] : []),
+    '-s', lookup.service,
+    '-w', value,
+  ];
+}
 
 // `security` prints the secret as hex (sometimes `0x`-prefixed) whenever the
 // stored blob is not plain text, which turns an otherwise healthy item into an
@@ -183,8 +210,25 @@ export async function readClaudeAccounts(env, { osPlatform = platform(), keychai
       if (probe.found || probe.error) {
         sources.push({
           kind: 'keychain',
-          service: probe.service || lookups[0].service,
+          service: probe.lookup?.service || lookups[0].service,
           read: () => keychain.find(lookups, { secret: true }),
+          // Re-reads before writing so a token Claude Code rotated in the
+          // meantime is never clobbered — the Keychain has no compare-and-swap,
+          // and this is the same protection writeFileAtomic gives the file.
+          write: async (lookup, value, expected) => {
+            const current = await keychain.find([lookup], { secret: true });
+
+            // Anything other than the exact value we read means someone else
+            // owns the item now. `add-generic-password -U` also CREATES a
+            // missing item, so a vanished entry — `claude /logout` — must block
+            // the write too rather than quietly resurrecting the login.
+            if (!current.found || current.value !== expected) {
+              return false;
+            }
+
+            await keychain.write(lookup, value);
+            return true;
+          },
         });
       }
     }
@@ -247,8 +291,8 @@ async function loadCredentialSource(source) {
     const oauth = parsed?.claudeAiOauth;
 
     return oauth?.accessToken
-      ? { raw: result.value, parsed, oauth }
-      : { error: `Keychain item "${result.service || source.service}" has no accessToken — run \`claude\` and /login` };
+      ? { raw: result.value, parsed, oauth, lookup: result.lookup }
+      : { error: `Keychain item "${result.lookup?.service || source.service}" has no accessToken — run \`claude\` and /login` };
   }
 
   let raw;
@@ -296,30 +340,37 @@ async function resolveCredentials(account, readOnly = false, now = Date.now()) {
   // Fixed source order decides the winner; expiry only skips candidates that
   // are already dead. Ranking by expiry instead would let a stale file outrank
   // a live Keychain just because its token happens to expire later.
-  const { raw, parsed, oauth, source } = candidates.find((entry) => !isExpired(entry.oauth, now)) || candidates[0];
-  const fromKeychain = source.kind === 'keychain';
-  const credentialState = { raw, parsed, oauth };
+  const chosen = candidates.find((entry) => !isExpired(entry.oauth, now)) || candidates[0];
+  const { raw, parsed, oauth, source, lookup } = chosen;
+  const credentialState = { raw, parsed, oauth, warnings: [] };
+
+  // A rotated token is written back to the SAME place it came from, so Claude
+  // Code and tokensleft never end up on divergent credentials.
+  const persist = source.kind === 'keychain'
+    ? (serialized, expected) => source.write(lookup, serialized, expected)
+    : async (serialized, expected) => {
+      await writeFileAtomic(source.credentialsPath, serialized, { expectedContent: expected });
+      return true;
+    };
 
   return {
     token: oauth.accessToken,
     plan: [oauth.subscriptionType, (oauth.rateLimitTier || '').replace(/^default_/, '')].filter(Boolean).join(' / '),
     expiresAt: Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
-    // Keychain credentials are read-only: redeeming the refresh token can
-    // rotate it, and tokensleft will not write the replacement back into the
-    // user's Keychain — losing that rotation would log them out of Claude Code.
-    refresh: oauth.refreshToken && !readOnly && !fromKeychain
-      ? () => refreshOAuthToken(source.credentialsPath, credentialState)
+    refresh: oauth.refreshToken && !readOnly
+      ? () => refreshOAuthToken(persist, credentialState)
       : null,
     readOnly,
     storage: source.kind,
+    warnings: credentialState.warnings,
   };
 }
 
-// Redeems the refresh token and persists the rotated credentials back to the
-// file, exactly as Claude Code itself would (minified JSON, other keys kept).
-// Returns the new access token, null on soft failure, throws a user-facing
-// string when the refresh token itself is dead (re-login required).
-async function refreshOAuthToken(credentialsPath, credentialState) {
+// Redeems the refresh token and persists the rotated credentials back to
+// wherever they came from, exactly as Claude Code itself would (minified JSON,
+// other keys kept). Returns the new access token, null on soft failure, throws
+// a user-facing string when the refresh token itself is dead (re-login needed).
+async function refreshOAuthToken(persist, credentialState) {
   const { parsed, oauth } = credentialState;
   let response;
 
@@ -343,7 +394,16 @@ async function refreshOAuthToken(credentialsPath, credentialState) {
 
   if (response.status === 400 || response.status === 401) {
     const code = body?.error || body?.error_description || '';
-    throw `token refresh rejected (${code || response.status}) — run \`claude\` and /login again`;
+
+    // Only `invalid_grant` actually means the login is dead. A 400/401 without
+    // an OAuth error code is far more likely an HTML proxy or WAF page, and
+    // telling the user to /login again cannot fix a network appliance.
+    if (code === 'invalid_grant') {
+      throw `token refresh rejected (${code}) — run \`claude\` and /login again`;
+    }
+
+    credentialState.warnings.push(`token refresh got HTTP ${response.status}${code ? ` (${code})` : ''} — check your network or proxy`);
+    return null;
   }
 
   if (!response.ok || !body?.access_token) {
@@ -363,13 +423,22 @@ async function refreshOAuthToken(credentialsPath, credentialState) {
   parsed.claudeAiOauth = oauth;
   const serialized = JSON.stringify(parsed);
 
+  // The freshly minted access token works for this run either way, so a failed
+  // write must not sink the whole refresh. It does have to be visible: the old
+  // refresh token stays stored, and if the server rotated it the NEXT run would
+  // redeem a dead one and report a misleading "session expired".
   try {
-    await writeFileAtomic(credentialsPath, serialized, { expectedContent: credentialState.raw });
+    const stored = await persist(serialized, credentialState.raw);
+
+    if (stored === false) {
+      credentialState.warnings.push('credentials changed underneath — kept the refreshed token for this run only');
+    } else {
+      credentialState.raw = serialized;
+    }
   } catch (error) {
-    throw new Error(`OAuth token refreshed but could not safely update Claude credentials: ${error.message}`);
+    credentialState.warnings.push(`could not save the refreshed credentials: ${error.message}`);
   }
 
-  credentialState.raw = serialized;
   return oauth.accessToken;
 }
 
@@ -453,11 +522,7 @@ export function formatSpend(spend) {
   return `$${amount} (${Math.round(spend.percent || 0)}%)`;
 }
 
-function expiredTokenMessage({ readOnly, storage }) {
-  if (storage === 'keychain') {
-    return 'OAuth token expired. tokensleft never writes to the macOS Keychain — run any prompt in Claude Code, or /login again.';
-  }
-
+function expiredTokenMessage({ readOnly }) {
   return readOnly
     ? 'OAuth token expired in read-only mode. Run any prompt in Claude Code, or /login again.'
     : 'OAuth token expired and no refresh token available. Run any prompt in Claude Code, or /login again.';
@@ -565,6 +630,9 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
     ms,
     items: buildClaudeLimitItems(data, { prefix: account.name }),
     spend: formatSpend(data.spend),
+    // A refresh that worked but could not be saved still produced usable bars —
+    // the warning rides along so the next run's failure is not a surprise.
+    warning: credentials.warnings?.join(' · ') || '',
   };
 }
 
@@ -707,6 +775,12 @@ function renderAccountBlock(result, width, mode = 'detail') {
 
   if (result.spend && !compact) {
     lines.push(`  {bold}${'Spend'.padEnd(12)}{/bold} ${escapeBlessed(result.spend)}`);
+  }
+
+  // The bars are fine, but something about the credentials needs attention —
+  // typically a refresh that could not be written back.
+  if (result.warning) {
+    lines.push(truncateTagged(`  {${COLOR.warning}-fg}${escapeBlessed(result.warning)}{/${COLOR.warning}-fg}`, width));
   }
 
   return lines.join('\n');
