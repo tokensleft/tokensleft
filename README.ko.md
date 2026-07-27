@@ -41,7 +41,7 @@ tokensleft [providers...] [options]
 ## 인증 정보와 개인정보 보호
 
 - 기존 CLI 로그인 정보를 로컬에서 감지합니다. 수동 키는 `~/.tokensleft/.env` 또는 `./.env`에 둘 수 있습니다. 전체 변수는 [.env.example](.env.example)을 참고하세요.
-- Claude Code 로그인 정보는 `~/.claude/.credentials.json`에서 읽습니다. macOS에서는 로그인 키체인의 `Claude Code-credentials` 항목을 사용하며, 처음 접근할 때 macOS가 권한을 묻습니다. 키체인 인증 정보는 읽기 전용이며 다시 기록하지 않습니다. 인증 정보가 전혀 없어도 Claude Code 트랜스크립트 기반 로컬 사용량은 계속 표시됩니다.
+- Claude Code 로그인 정보는 `~/.claude/.credentials.json`에서 읽습니다. macOS에서는 로그인 키체인의 `Claude Code-credentials` 항목을 먼저 사용하며, 처음 접근할 때 macOS가 권한을 묻습니다. 사용 가능한 토큰을 가진 쪽이 선택되므로 오래된 파일이 새 로그인을 가리지 않습니다. 키체인 인증 정보는 읽기 전용이며 다시 기록하지 않습니다. 인증 정보가 전혀 없어도 Claude Code 트랜스크립트 기반 로컬 사용량은 계속 표시됩니다.
 - 한도 요청은 TokensLeft 서비스를 거치지 않고 각 Provider로 직접 또는 설정한 proxy를 통해 전송됩니다. TokensLeft 계정, 서버, 분석 또는 텔레메트리는 없습니다.
 - Codex의 비공식 48시간 내 재설정 확률은 `willcodexquotareset.com`에서 익명으로 가져오며 인증 정보나 계정 식별자는 전송하지 않습니다.
 - Claude Code, Codex, Gemini CLI 및 Kimi Code의 로컬 사용량은 컴퓨터의 CLI 로그에서만 계산되며 업로드되지 않습니다. 상세 보기에는 입력, 캐시 입력, 출력과 공개 가격이 있을 때의 예상 API 비용이 표시됩니다.

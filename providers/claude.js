@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, readFile, readdir } from 'node:fs/promises';
-import { platform } from 'node:os';
+import { platform, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { claudeConfigDir } from '../lib/claude-settings.js';
 import { writeFileAtomic } from '../lib/fsx.js';
@@ -39,26 +40,119 @@ export { claudeConfigDir } from '../lib/claude-settings.js';
 // file would have. Without this fallback the provider looks logged out on
 // every Mac.
 export const KEYCHAIN_SERVICE = 'Claude Code-credentials';
+// `security` exits 44 (errSecItemNotFound) when nothing matches — the honest
+// "no credential stored" case. Every OTHER non-zero exit is a real failure (a
+// locked keychain, a denied or dismissed access prompt) and must never be
+// reported as "not signed in", which sends users off to re-run /login for a
+// login that is already there.
+const KEYCHAIN_ITEM_NOT_FOUND = 44;
 
-function securityOutput(args) {
+function describeSecurityFailure(error, stderr) {
+  if (error.killed || error.signal || error.code === 'ETIMEDOUT') {
+    return 'timed out — a Keychain access prompt may still be waiting for an answer';
+  }
+
+  if (error.code === 'ENOENT') {
+    return '/usr/bin/security is missing';
+  }
+
+  // `security` explains itself well ("User interaction is not allowed.",
+  // "The user name or passphrase you entered is not correct."), so pass its own
+  // first line through rather than inventing a worse message.
+  const reported = String(stderr || '').trim().split('\n')[0].replace(/^security: /, '');
+  return reported || `security exited with ${error.code}`;
+}
+
+function runSecurity(args) {
   return new Promise((resolve) => {
-    execFile('/usr/bin/security', args, { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-      resolve(error ? '' : String(stdout));
+    execFile('/usr/bin/security', args, { timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (!error) {
+        resolve({ found: true, value: String(stdout).trim() });
+        return;
+      }
+
+      resolve(error.code === KEYCHAIN_ITEM_NOT_FOUND
+        ? { found: false }
+        : { found: false, error: describeSecurityFailure(error, stderr) });
     });
   });
 }
 
+// Claude Code suffixes the Keychain item with a hash of a non-default config
+// directory, so a CLAUDE_CONFIG_DIR install keeps its own item; the unsuffixed
+// name stays as a fallback for installs that predate it.
+function configDirHash(configDir) {
+  return createHash('sha256').update(configDir.normalize('NFC')).digest('hex').slice(0, 8);
+}
+
+export function keychainServiceCandidates(env) {
+  if (env.CLAUDE_KEYCHAIN_SERVICE) {
+    return [env.CLAUDE_KEYCHAIN_SERVICE];
+  }
+
+  const override = env.CLAUDE_CONFIG_DIR?.trim();
+  return override
+    ? [`${KEYCHAIN_SERVICE}-${configDirHash(override)}`, KEYCHAIN_SERVICE]
+    : [KEYCHAIN_SERVICE];
+}
+
+// Claude Code writes the item under the current user's account, but a login
+// left by an older version can carry no account at all. Ask for the scoped item
+// first so a service-only match can never hand back somebody else's stale item,
+// then fall back to the bare lookup.
+export function keychainLookups(env) {
+  const account = (env.USER || '').trim() || userInfo().username;
+
+  return keychainServiceCandidates(env).flatMap((service) => (account
+    ? [
+      { service, args: ['find-generic-password', '-a', account, '-s', service] },
+      { service, args: ['find-generic-password', '-s', service] },
+    ]
+    : [{ service, args: ['find-generic-password', '-s', service] }]));
+}
+
 export const keychainCredentials = {
-  // Attributes only: listing an item never touches its secret, so macOS does
-  // not raise an access prompt just because tokensleft is looking for one.
-  exists: (service) => securityOutput(['find-generic-password', '-s', service])
-    .then((out) => out.trim().length > 0),
-  // Reading the data is what triggers "security wants to use your confidential
-  // information stored in Claude Code-credentials"; "Always Allow" makes it a
-  // one-time prompt. Denying just yields empty output, handled as a bad item.
-  read: (service) => securityOutput(['find-generic-password', '-s', service, '-w'])
-    .then((out) => out.trim()),
+  // `secret: false` reads attributes only, which never touches the stored data
+  // and so never raises the macOS access prompt — that is what makes detection
+  // silent for people who have no Claude Code login at all. `secret: true` adds
+  // `-w` and is the call that can prompt.
+  async find(lookups, { secret = false } = {}) {
+    let failure = '';
+
+    for (const lookup of lookups) {
+      const result = await runSecurity(secret ? [...lookup.args, '-w'] : lookup.args);
+
+      if (result.found) {
+        return { found: true, value: result.value, service: lookup.service };
+      }
+
+      if (result.error && !failure) {
+        failure = result.error;
+      }
+    }
+
+    return { found: false, error: failure };
+  },
 };
+
+// `security` prints the secret as hex (sometimes `0x`-prefixed) whenever the
+// stored blob is not plain text, which turns an otherwise healthy item into an
+// unparseable one. Decode that form before giving up.
+export function parseKeychainCredentials(raw) {
+  const direct = parseJson(raw);
+
+  if (direct) {
+    return direct;
+  }
+
+  const hex = String(raw || '').trim().replace(/^0x/i, '');
+
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) {
+    return null;
+  }
+
+  return parseJson(Buffer.from(hex, 'hex').toString('utf8'));
+}
 
 // Accounts: the system key is auto-detected from Claude Code's credentials
 // file — or, on macOS, its Keychain item — re-read on every refresh because
@@ -72,23 +166,39 @@ export async function readClaudeAccounts(env, { osPlatform = platform(), keychai
 
   if (!disableSystem) {
     const credentialsPath = join(configDir, '.credentials.json');
-    const exists = await access(credentialsPath).then(() => true, () => false);
-    const keychainService = env.CLAUDE_KEYCHAIN_SERVICE || KEYCHAIN_SERVICE;
+    const sources = [];
 
-    if (exists) {
+    // Keychain before file: on macOS the Keychain is Claude Code's source of
+    // truth, and a re-login there can leave a stale .credentials.json behind
+    // that would otherwise shadow the live token with an expired one. The file
+    // stays as a fallback, and resolution falls through to it whenever the
+    // Keychain cannot produce a usable token.
+    if (osPlatform === 'darwin' && !disableKeychain) {
+      const lookups = keychainLookups(env);
+      const probe = await keychain.find(lookups);
+
+      // A failed probe still counts: a locked keychain or a denied prompt is a
+      // credential that exists but could not be read, and saying so beats
+      // silently reporting the whole provider as undetected.
+      if (probe.found || probe.error) {
+        sources.push({
+          kind: 'keychain',
+          service: probe.service || lookups[0].service,
+          read: () => keychain.find(lookups, { secret: true }),
+        });
+      }
+    }
+
+    if (await access(credentialsPath).then(() => true, () => false)) {
+      sources.push({ kind: 'file', credentialsPath });
+    }
+
+    if (sources.length > 0) {
       accounts.push({
         name: env.CLAUDE_SYSTEM_NAME || 'system',
         source: 'system',
-        storage: 'file',
-        credentialsPath,
-      });
-    } else if (osPlatform === 'darwin' && !disableKeychain && await keychain.exists(keychainService)) {
-      accounts.push({
-        name: env.CLAUDE_SYSTEM_NAME || 'system',
-        source: 'system',
-        storage: 'keychain',
-        keychainService,
-        readCredentials: () => keychain.read(keychainService),
+        storage: sources[0].kind,
+        sources,
       });
     }
   }
@@ -118,28 +228,76 @@ export async function readClaudeAccounts(env, { osPlatform = platform(), keychai
   return accounts;
 }
 
-async function resolveCredentials(account, readOnly = false) {
+// Reads one credential source into { raw, parsed, oauth } — or into a
+// user-facing `error` explaining why it could not be used, so the caller can
+// try the next source and still report something actionable if none work.
+async function loadCredentialSource(source) {
+  if (source.kind === 'keychain') {
+    const result = await source.read().catch((error) => ({ found: false, error: error.message }));
+
+    if (!result.found) {
+      return {
+        error: result.error
+          ? `cannot read the login Keychain: ${result.error}`
+          : `no Claude Code item in the login Keychain — run \`claude\` and /login`,
+      };
+    }
+
+    const parsed = parseKeychainCredentials(result.value);
+    const oauth = parsed?.claudeAiOauth;
+
+    return oauth?.accessToken
+      ? { raw: result.value, parsed, oauth }
+      : { error: `Keychain item "${result.service || source.service}" has no accessToken — run \`claude\` and /login` };
+  }
+
+  let raw;
+
+  try {
+    raw = await readFile(source.credentialsPath, 'utf8');
+  } catch (error) {
+    return { error: `cannot read credentials: ${error.message}` };
+  }
+
+  const parsed = parseJson(raw);
+  const oauth = parsed?.claudeAiOauth;
+
+  return oauth?.accessToken
+    ? { raw, parsed, oauth }
+    : { error: 'no accessToken in .credentials.json — run `claude` and /login' };
+}
+
+function isExpired(oauth, now) {
+  return Number.isFinite(oauth.expiresAt) && oauth.expiresAt < now;
+}
+
+async function resolveCredentials(account, readOnly = false, now = Date.now()) {
   if (account.source === 'manual') {
     return { token: account.token, plan: '', expiresAt: null, refresh: null, readOnly, storage: 'env' };
   }
 
-  const fromKeychain = account.storage === 'keychain';
-  const raw = fromKeychain
-    ? await account.readCredentials().catch((error) => {
-      throw new Error(`cannot read Keychain item "${account.keychainService}": ${error.message}`);
-    })
-    : await readFile(account.credentialsPath, 'utf8').catch((error) => {
-      throw new Error(`cannot read credentials: ${error.message}`);
-    });
-  const parsed = parseJson(raw);
-  const oauth = parsed?.claudeAiOauth;
+  const problems = [];
+  const candidates = [];
 
-  if (!oauth?.accessToken) {
-    throw new Error(fromKeychain
-      ? `no accessToken in Keychain item "${account.keychainService}" — allow the Keychain access prompt, or run \`claude\` and /login`
-      : 'no accessToken in .credentials.json — run `claude` and /login');
+  for (const source of account.sources) {
+    const loaded = await loadCredentialSource(source);
+
+    if (loaded.oauth) {
+      candidates.push({ ...loaded, source });
+    } else if (loaded.error) {
+      problems.push(loaded.error);
+    }
   }
 
+  if (candidates.length === 0) {
+    throw new Error(problems[0] || 'no Claude Code credentials found — run `claude` and /login');
+  }
+
+  // Fixed source order decides the winner; expiry only skips candidates that
+  // are already dead. Ranking by expiry instead would let a stale file outrank
+  // a live Keychain just because its token happens to expire later.
+  const { raw, parsed, oauth, source } = candidates.find((entry) => !isExpired(entry.oauth, now)) || candidates[0];
+  const fromKeychain = source.kind === 'keychain';
   const credentialState = { raw, parsed, oauth };
 
   return {
@@ -150,10 +308,10 @@ async function resolveCredentials(account, readOnly = false) {
     // rotate it, and tokensleft will not write the replacement back into the
     // user's Keychain — losing that rotation would log them out of Claude Code.
     refresh: oauth.refreshToken && !readOnly && !fromKeychain
-      ? () => refreshOAuthToken(account.credentialsPath, credentialState)
+      ? () => refreshOAuthToken(source.credentialsPath, credentialState)
       : null,
     readOnly,
-    storage: account.storage || 'file',
+    storage: source.kind,
   };
 }
 

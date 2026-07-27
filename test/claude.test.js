@@ -8,6 +8,10 @@ import {
   createClaudeProvider,
   createTranscriptScanner,
   isZaiModel,
+  keychainCredentials,
+  keychainLookups,
+  keychainServiceCandidates,
+  parseKeychainCredentials,
   parseTranscriptChunk,
   readClaudeAccounts,
   renderClaudeSnapshot,
@@ -188,15 +192,17 @@ test('transcript scanner reports missing projects dir', async () => {
 
 // --- credential discovery ---------------------------------------------------------
 
+// Stands in for the `security` calls: `secret` is what the item holds (null
+// for "no such item"), `calls` records probe/read plus the exact argv so tests
+// can assert the account-scoped lookup runs first.
 function keychainStub(secret, calls = []) {
   return {
-    exists: async (service) => {
-      calls.push(['exists', service]);
-      return secret !== null;
-    },
-    read: async (service) => {
-      calls.push(['read', service]);
-      return secret ?? '';
+    find: async (lookups, { secret: wantSecret = false } = {}) => {
+      calls.push([wantSecret ? 'read' : 'probe', lookups.map((lookup) => lookup.args.join(' '))]);
+
+      return secret === null
+        ? { found: false }
+        : { found: true, value: wantSecret ? secret : '', service: lookups[0].service };
     },
   };
 }
@@ -223,19 +229,61 @@ async function emptyConfigDir(t, prefix) {
 test('macOS reads credentials from the Keychain when .credentials.json is absent', async (t) => {
   const configDir = await emptyConfigDir(t, 'tokensleft-keychain-');
   const calls = [];
-  const accounts = await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir }, {
+  const accounts = await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir, USER: 'ada' }, {
     osPlatform: 'darwin',
     keychain: keychainStub(keychainSecret(), calls),
   });
 
   assert.equal(accounts.length, 1);
   assert.equal(accounts[0].storage, 'keychain');
-  assert.equal(accounts[0].keychainService, 'Claude Code-credentials');
+  assert.deepEqual(accounts[0].sources.map((source) => source.kind), ['keychain']);
   // Detection must not touch the secret — reading it is what prompts on macOS.
-  assert.deepEqual(calls, [['exists', 'Claude Code-credentials']]);
+  assert.deepEqual(calls.map(([kind]) => kind), ['probe']);
 });
 
-test('Keychain lookup is skipped off macOS, when disabled, and when the file wins', async (t) => {
+test('the account-scoped Keychain lookup runs before the service-only one', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-account-');
+  const calls = [];
+  await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir, USER: 'ada' }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret(), calls),
+  });
+
+  // A bare `-s` match returns whichever item comes first, which can be a stale
+  // login from another account; `-a $USER` pins it to Claude Code's own item.
+  const [hashed, plain] = keychainServiceCandidates({ CLAUDE_CONFIG_DIR: configDir });
+  const [, argv] = calls[0];
+  assert.deepEqual(argv, [
+    `find-generic-password -a ada -s ${hashed}`,
+    `find-generic-password -s ${hashed}`,
+    `find-generic-password -a ada -s ${plain}`,
+    `find-generic-password -s ${plain}`,
+  ]);
+});
+
+test('the real security lookup resolves instead of throwing on any platform', async () => {
+  // Exercises the un-stubbed `/usr/bin/security` path: exit 44 on a Mac with no
+  // Claude Code login, ENOENT where the binary does not exist. Both are "no
+  // item", never an exception and never a hang.
+  const result = await keychainCredentials.find(keychainLookups({ CLAUDE_KEYCHAIN_SERVICE: 'tokensleft-test-absent-item' }));
+
+  assert.equal(result.found, false);
+  assert.equal(typeof result.error, 'string');
+});
+
+test('a custom config dir gets its own hashed Keychain item, then the plain one', () => {
+  assert.deepEqual(keychainServiceCandidates({}), ['Claude Code-credentials']);
+  assert.deepEqual(
+    keychainServiceCandidates({ CLAUDE_KEYCHAIN_SERVICE: 'Custom-credentials' }),
+    ['Custom-credentials'],
+  );
+
+  const [hashed, plain] = keychainServiceCandidates({ CLAUDE_CONFIG_DIR: '/Users/ada/.claude' });
+  assert.match(hashed, /^Claude Code-credentials-[0-9a-f]{8}$/);
+  assert.equal(plain, 'Claude Code-credentials');
+});
+
+test('Keychain lookup is skipped off macOS and when disabled', async (t) => {
   const configDir = await emptyConfigDir(t, 'tokensleft-keychain-skip-');
   const keychain = keychainStub(keychainSecret());
   const read = (env, osPlatform = 'darwin') => readClaudeAccounts(
@@ -247,10 +295,23 @@ test('Keychain lookup is skipped off macOS, when disabled, and when the file win
   assert.deepEqual(await read({}, 'linux'), []);
   assert.deepEqual(await read({ CLAUDE_DISABLE_KEYCHAIN: '1' }), []);
   assert.deepEqual(await read({ CLAUDE_DISABLE_SYSTEM_KEY: '1' }), []);
+});
 
-  await writeFile(join(configDir, '.credentials.json'), keychainSecret());
-  const [account] = await read({});
-  assert.equal(account.storage, 'file');
+test('the Keychain outranks a stale .credentials.json, which stays as a fallback', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-order-');
+  await writeFile(join(configDir, '.credentials.json'), keychainSecret({
+    accessToken: 'file-token',
+    // A later expiry must not promote the file above the live Keychain.
+    expiresAt: Date.now() + 10 * 60 * 60 * 1000,
+  }));
+
+  const [account] = await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret()),
+  });
+
+  assert.deepEqual(account.sources.map((source) => source.kind), ['keychain', 'file']);
+  assert.equal(account.storage, 'keychain');
 });
 
 test('Keychain credentials authenticate the usage request', async (t) => {
@@ -299,16 +360,109 @@ test('an expired Keychain token is reported, never redeemed behind the Keychain'
   assert.deepEqual(calls, []);
 });
 
-test('a denied Keychain prompt reports the item, not a crash', async (t) => {
-  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-denied-');
+test('an item holding no accessToken is reported, not crashed on', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-empty-');
   const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
     osPlatform: 'darwin',
-    keychain: { exists: async () => true, read: async () => '' },
+    keychain: keychainStub('{}'),
   });
   const snapshot = await provider.fetch();
 
   assert.equal(snapshot.results[0].status, 'CRED');
-  assert.match(snapshot.results[0].error, /Keychain item "Claude Code-credentials"/);
+  assert.match(snapshot.results[0].error, /has no accessToken/);
+});
+
+test('a locked or denied Keychain is reported as such, not as "not signed in"', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-locked-');
+  const locked = {
+    find: async () => ({ found: false, error: 'User interaction is not allowed.' }),
+  };
+
+  // The account must still be detected: a credential that exists but cannot be
+  // read is not the same as having no login, and telling the user to /login
+  // again would not fix a locked keychain.
+  const accounts = await readClaudeAccounts({ CLAUDE_CONFIG_DIR: configDir }, { osPlatform: 'darwin', keychain: locked });
+  assert.equal(accounts.length, 1);
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, { osPlatform: 'darwin', keychain: locked });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].status, 'CRED');
+  assert.match(snapshot.results[0].error, /cannot read the login Keychain: User interaction is not allowed\./);
+  assert.doesNotMatch(snapshot.results[0].error, /no accessToken/);
+});
+
+test('a hex-encoded Keychain payload is decoded instead of failing to parse', async (t) => {
+  const json = keychainSecret();
+  const hex = Buffer.from(json, 'utf8').toString('hex');
+
+  assert.equal(parseKeychainCredentials(hex).claudeAiOauth.accessToken, 'keychain-access-token');
+  assert.equal(parseKeychainCredentials(`0x${hex}`).claudeAiOauth.accessToken, 'keychain-access-token');
+  assert.equal(parseKeychainCredentials(json).claudeAiOauth.accessToken, 'keychain-access-token');
+  assert.equal(parseKeychainCredentials('not json, not hex'), null);
+  assert.equal(parseKeychainCredentials(''), null);
+
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-hex-');
+  const originalFetch = globalThis.fetch;
+  const tokens = [];
+  globalThis.fetch = async (_url, options) => {
+    tokens.push(options?.headers?.Authorization);
+    return new Response(JSON.stringify(SAMPLE_USAGE), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(hex),
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].ok, true);
+  assert.deepEqual(tokens, ['Bearer keychain-access-token']);
+});
+
+test('an unreadable Keychain falls through to .credentials.json', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-fallthrough-');
+  await writeFile(join(configDir, '.credentials.json'), keychainSecret({ accessToken: 'file-token' }));
+
+  const originalFetch = globalThis.fetch;
+  const tokens = [];
+  globalThis.fetch = async (_url, options) => {
+    tokens.push(options?.headers?.Authorization);
+    return new Response(JSON.stringify(SAMPLE_USAGE), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: { find: async () => ({ found: false, error: 'User interaction is not allowed.' }) },
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].ok, true);
+  assert.deepEqual(tokens, ['Bearer file-token']);
+});
+
+test('an expired Keychain token falls through to a live file token', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-keychain-stale-');
+  await writeFile(join(configDir, '.credentials.json'), keychainSecret({ accessToken: 'file-token' }));
+
+  const originalFetch = globalThis.fetch;
+  const tokens = [];
+  globalThis.fetch = async (_url, options) => {
+    tokens.push(options?.headers?.Authorization);
+    return new Response(JSON.stringify(SAMPLE_USAGE), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir }, {
+    osPlatform: 'darwin',
+    keychain: keychainStub(keychainSecret({ accessToken: 'stale', expiresAt: Date.now() - 60_000 })),
+  });
+  const snapshot = await provider.fetch();
+
+  assert.equal(snapshot.results[0].ok, true);
+  assert.deepEqual(tokens, ['Bearer file-token']);
 });
 
 test('local transcript usage keeps the provider alive without credentials', async (t) => {
