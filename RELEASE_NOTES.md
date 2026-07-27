@@ -1,4 +1,4 @@
-<!-- release: v0.8.2 -->
+<!-- release: v0.8.3 -->
 
-- Claude Code is now detected on macOS.
-- Claude Code local usage is now shown even when you are logged out.
+- Fixed Claude Code on macOS reporting a missing Keychain token after running for a while.
+- Keychain problems now say what actually went wrong instead of asking you to log in again.
