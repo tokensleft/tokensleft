@@ -108,6 +108,7 @@ test('scanner keeps last-known-good data when one file refresh fails', async () 
 
   const first = await scanner.scan();
   shouldFail = true;
+  await appendFile(filePath, '{}\n'); // grown, so it is re-read — and that read fails
   const second = await scanner.scan();
 
   assert.equal(first.models[0].all.output, 7);
@@ -116,6 +117,34 @@ test('scanner keeps last-known-good data when one file refresh fails', async () 
   assert.deepEqual(second.models.map((entry) => entry.model), ['good']);
   assert.equal(second.models[0].all.output, 7);
   assert.match(stripBlessedTags(renderLocalUsage(second)), /partial · 1 file could not be refreshed/);
+});
+
+test('scanner leaves unchanged append-only logs alone and re-reads grown ones', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tokensleft-local-unchanged-'));
+  after(() => rm(dir, { recursive: true, force: true }));
+  const filePath = join(dir, 'usage.jsonl');
+  await writeFile(filePath, 'first\n');
+  let refreshes = 0;
+  const scanner = createLocalUsageScanner({
+    listFiles: async () => [filePath],
+    refreshFile: async (_path, info, cached) => {
+      refreshes += 1;
+      cached.events.push({ t: Date.now(), model: 'm', output: 1, cost: 0.1 });
+      cached.offset = info.size;
+    },
+  });
+
+  await scanner.scan();
+  const before = refreshes;
+  const unchanged = await scanner.scan();
+  assert.equal(refreshes, before, 'an unchanged file is not refreshed again');
+  assert.equal(unchanged.files, 1);
+  assert.equal(unchanged.models[0].all.messages, 1);
+
+  await appendFile(filePath, 'second\n');
+  const grown = await scanner.scan();
+  assert.equal(refreshes, before + 1);
+  assert.equal(grown.models[0].all.messages, 2);
 });
 
 test('local usage tables render in detail mode only', () => {
