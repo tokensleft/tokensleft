@@ -20,7 +20,9 @@
     "start": "node bin/tokensleft.js",
     "demo": "node bin/tokensleft.js --demo",
     "test": "node --test",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=70 --test-coverage-branches=80 --test-coverage-functions=80",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-exclude=\"test/**\" --test-coverage-lines=70 --test-coverage-branches=80 --test-coverage-functions=80",
+    "lint": "eslint .",
+    "pricing:update": "node scripts/update-model-pricing.js",
     "prepublishOnly": "npm test"
   },
   "keywords": [
@@ -42,7 +44,7 @@
   ],
   "dependencies": {
     "blessed": "^0.1.81",
-    "undici": "^7.11.0"
+    "undici": "^7.29.1"
   },
   "engines": {
     "node": ">=20.18.1"
@@ -54,5 +56,10 @@
   "homepage": "https://github.com/tokensleft/tokensleft#readme",
   "bugs": {
     "url": "https://github.com/tokensleft/tokensleft/issues"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0"
   }
 }

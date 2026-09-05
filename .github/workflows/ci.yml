@@ -41,6 +41,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm test
       - run: node bin/tokensleft.js --demo --once
       - if: matrix.coverage == true
