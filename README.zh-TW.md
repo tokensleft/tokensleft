@@ -58,7 +58,10 @@ git clone https://github.com/tokensleft/tokensleft.git
 cd tokensleft
 npm ci
 npm test
+npm run lint
 npm run demo
 ```
+
+`npm run pricing:update` 會從 LiteLLM 與 models.dev 重新產生內建的模型價格快照。
 
 [安全政策](SECURITY.md) · 採 MIT 授權。

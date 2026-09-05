@@ -42,6 +42,7 @@ tokensleft [providers...] [options]
 
 - 自动读取本地 CLI 的现有登录信息；手动密钥可放在 `~/.tokensleft/.env` 或 `./.env`，完整变量见 [.env.example](.env.example)。
 - Claude Code 登录信息会从 `~/.claude/.credentials.json` 读取；macOS 上会优先读 login Keychain 中的 `Claude Code-credentials` 项目，首次读取时系统会询问授权。哪个来源有可用的 token 就用哪个，过期的旧文件不会盖掉新的登录。快到期的 token 会自动刷新并写回原来的来源，且不会覆盖更新的凭据；`--read-only` 可禁用。完全没有凭据时，仍会显示来自 Claude Code 转录文件的本地用量。
+- Kimi Code 会读取 `~/.kimi-code/credentials/kimi-code.json`，并兼容旧版 `~/.kimi` 路径；面板会显示会员等级、共享额度、并行上限与包含 Kimi K3 在内的可用模型。多个会员密钥可设置为 `KIMI_CODE_API_KEY_1`、`_2` 等，并用 `KIMI_CODE_NAME_1`、`_2` 自定义名称。原来的单个 `KIMI_CODE_API_KEY` 仍可使用；这些不是 Moonshot 的 `KIMI_API_KEY`。
 - 额度请求不会经过 TokensLeft 服务，只会直连各 Provider 或使用你配置的 proxy；TokensLeft 没有账号系统、服务器、分析或遥测。
 - Codex 的非官方 48 小时重置概率会匿名从 `willcodexquotareset.com` 获取，不会附带凭据或账号标识信息。
 - Claude Code、Codex、Gemini CLI 与 Kimi Code 的本地用量仅从电脑上的 CLI 日志计算，不会上传；详细模式会显示输入、缓存输入、输出，以及有公开价格时的 API 费用估算。
@@ -57,7 +58,10 @@ git clone https://github.com/tokensleft/tokensleft.git
 cd tokensleft
 npm ci
 npm test
+npm run lint
 npm run demo
 ```
+
+`npm run pricing:update` 会从 LiteLLM 和 models.dev 重新生成内置的模型价格快照。
 
 [安全策略](SECURITY.md) · 采用 MIT 许可证。

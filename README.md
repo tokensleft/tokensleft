@@ -58,7 +58,10 @@ git clone https://github.com/tokensleft/tokensleft.git
 cd tokensleft
 npm ci
 npm test
+npm run lint
 npm run demo
 ```
+
+`npm run pricing:update` regenerates the embedded model price snapshot from LiteLLM and models.dev.
 
 [Security policy](SECURITY.md) · MIT licensed.

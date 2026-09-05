@@ -42,6 +42,7 @@ tokensleft [providers...] [options]
 
 - 既存 CLI のログイン情報をローカルで検出します。手動キーは `~/.tokensleft/.env` または `./.env` に保存できます。詳細は [.env.example](.env.example) を参照してください。
 - Claude Code のログイン情報は `~/.claude/.credentials.json` から読み取ります。macOS では login キーチェーンの `Claude Code-credentials` 項目を優先し、初回アクセス時に macOS が許可を求めます。使用可能なトークンを持つ方が採用されるため、古いファイルが新しいログインを覆い隠すことはありません。期限が近いトークンは更新され、取得元と同じ場所へ保存されます。より新しい認証情報を上書きすることはなく、`--read-only` で無効化できます。認証情報がまったくない場合でも、Claude Code のトランスクリプトによるローカル使用量は表示されます。
+- Kimi Code のログイン情報は `~/.kimi-code/credentials/kimi-code.json` と旧来の `~/.kimi` パスから検出します。ダッシュボードにはメンバーシップのレベル、共有クォータ、並列実行の上限、Kimi K3 を含む利用可能なモデルが表示されます。複数のメンバーシップキーは `KIMI_CODE_API_KEY_1`、`_2` のように指定でき、`KIMI_CODE_NAME_1`、`_2` で表示名を付けられます。従来の単一キー `KIMI_CODE_API_KEY` も引き続き使えます。これらは Moonshot の `KIMI_API_KEY` ではありません。
 - 上限リクエストは TokensLeft のサービスを経由せず、各 Provider へ直接、または設定済み proxy 経由で送信されます。TokensLeft のアカウント、サーバー、分析、テレメトリーはありません。
 - Codex の非公式な48時間以内のリセット確率は `willcodexquotareset.com` から匿名で取得し、認証情報やアカウント識別子は送信しません。
 - Claude Code、Codex、Gemini CLI、Kimi Code のローカル使用量は端末内の CLI ログだけから計算され、アップロードされません。詳細表示では入力、キャッシュ入力、出力、および公開価格がある場合の推定 API コストを表示します。
@@ -57,7 +58,10 @@ git clone https://github.com/tokensleft/tokensleft.git
 cd tokensleft
 npm ci
 npm test
+npm run lint
 npm run demo
 ```
+
+`npm run pricing:update` は LiteLLM と models.dev から組み込みのモデル価格スナップショットを再生成します。
 
 [セキュリティポリシー](SECURITY.md) · MIT ライセンス。
