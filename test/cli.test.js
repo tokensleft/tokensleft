@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { SOURCE_URL } from '../lib/meta.js';
 import {
   formatPlainProviderBlock,
   isNpxExecution,
@@ -136,4 +137,5 @@ test('usage lists every provider id', () => {
 
   assert.match(text, /--read-only/);
   assert.match(text, /--version/);
+  assert.ok(text.includes(`Source: ${SOURCE_URL}`));
 });

@@ -16,13 +16,17 @@ import {
   DEFAULT_TERMINAL_PROFILE,
   DASHBOARD_SUBTITLE,
   fitProviderBlock,
+  footerActionAt,
   formatFooter,
+  formatFooterLayout,
   formatHelp,
   formatProviderSectionTitle,
   formatResetAlert,
   formatResetHistory,
   installCelebrationKeyInterceptor,
+  isMouseReleaseOutside,
   MIN_DASHBOARD_WIDTH,
+  pageScrollTarget,
   playCelebrationBell,
   rainbowTitle,
   resetCelebrationLayout,
@@ -184,6 +188,67 @@ test('formatFooter stays at two concise lines and aggregates healthy providers',
   assert.ok(!lines[0].includes('Provider 1'), 'healthy state is summarized instead of listing every provider');
 });
 
+test('footer exposes mouse hit targets for every visible action', () => {
+  const states = Array.from({ length: 3 }, (_, index) => ({
+    provider: { title: `Provider ${index + 1}`, headerStatus: () => ({ ok: true }) },
+    snapshot: { ok: true },
+    updatedAt: new Date(),
+    refreshing: false,
+  }));
+  const layout = formatFooterLayout({
+    states,
+    alerts: [],
+    mode: 'compact',
+    hasResetHistory: true,
+    width: 132,
+  });
+  const actions = new Set(layout.targets.map((target) => target.action));
+
+  assert.deepEqual(actions, new Set([
+    'refresh',
+    'toggle-mode',
+    'scroll',
+    'reset-replay',
+    'help',
+    'exit',
+  ]));
+
+  for (const target of layout.targets) {
+    assert.equal(footerActionAt(layout.targets, target.start, 1), target.action);
+    assert.equal(footerActionAt(layout.targets, target.end - 1, 1), target.action);
+  }
+
+  assert.equal(footerActionAt(layout.targets, layout.targets[0].start, 0), null);
+  assert.equal(footerActionAt(layout.targets, -1, 1), null);
+  assert.equal(
+    layout.targets.filter((target) => target.action === 'refresh').length,
+    1,
+    'the 1-9 hint cannot know which provider was meant, so it is not clickable',
+  );
+  assert.match(stripBlessedTags(layout.content), /1-3 provider/);
+});
+
+test('footer scroll click pages down and wraps to the top at the end', () => {
+  assert.equal(pageScrollTarget({ top: 0, pageHeight: 10, contentHeight: 35 }), 10);
+  assert.equal(pageScrollTarget({ top: 20, pageHeight: 10, contentHeight: 35 }), 30);
+  assert.equal(pageScrollTarget({ top: 30, pageHeight: 10, contentHeight: 35 }), 0);
+  assert.equal(pageScrollTarget({ top: 0, pageHeight: 40, contentHeight: 35 }), 0);
+  assert.equal(pageScrollTarget({ top: NaN, pageHeight: 0, contentHeight: 3 }), 1);
+  assert.equal(pageScrollTarget(), 0);
+});
+
+test('mouse release outside a window dismisses it without treating its border as outside', () => {
+  const bounds = { xi: 10, xl: 30, yi: 5, yl: 15 };
+
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'left', x: 9, y: 10 }, bounds), true);
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'left', x: 30, y: 10 }, bounds), true);
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'left', x: 10, y: 5 }, bounds), false);
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'left', x: 29, y: 14 }, bounds), false);
+  assert.equal(isMouseReleaseOutside({ action: 'mousedown', button: 'left', x: 9, y: 10 }, bounds), false);
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'right', x: 9, y: 10 }, bounds), false);
+  assert.equal(isMouseReleaseOutside({ action: 'mouseup', button: 'left', x: 9, y: 10 }, null), false);
+});
+
 test('reset celebration uses a responsive block-letter title with clear details', () => {
   const alert = stripBlessedTags(formatResetAlert({
     providers: ['Codex'],
@@ -268,12 +333,35 @@ test('narrow footer stays inside its padded width and asks for a resize', () => 
 
 test('help lists controls without a provider shortcut table', () => {
   const help = formatHelp({ width: 48 });
+  const plain = stripBlessedTags(help);
 
-  assert.match(stripBlessedTags(help), /1-9\s+refresh the numbered provider/);
-  assert.match(stripBlessedTags(help), /\?\/h\s+toggle this help/);
-  assert.doesNotMatch(stripBlessedTags(help), /Provider shortcuts/);
+  assert.match(plain, /1-9\s+Refresh provider/);
+  assert.match(plain, /\?\/h\s+Toggle help/);
+  assert.doesNotMatch(plain, /Controls|Legend|Project/);
+  assert.doesNotMatch(plain, /Provider shortcuts/);
   assert.ok(help.split('\n').every((line) => visibleCellWidth(line) <= 48));
   assert.doesNotThrow(() => stripBlessedColorTags(help));
+});
+
+test('help includes source and terminal-selection guidance', () => {
+  const help = stripBlessedTags(formatHelp({ width: 64 }));
+
+  assert.doesNotMatch(help, /c\s+copy current view/);
+  assert.match(help, /Shift\+drag\s+Select text/);
+  assert.match(help, /Source code/);
+  assert.match(help, /https:\/\/github\.com\/tokensleft\/tokensleft/);
+});
+
+test('help uses two control columns when wide and one column when narrow', () => {
+  const wide = stripBlessedTags(formatHelp({ resetHistoryAvailable: true, width: 64 }));
+  const narrow = stripBlessedTags(formatHelp({ resetHistoryAvailable: true, width: 48 }));
+
+  assert.ok(wide.split('\n').some((line) => /r\s+Refresh all.*1-9\s+Refresh provider/.test(line)));
+  assert.ok(!narrow.split('\n').some((line) => /r\s+Refresh all.*1-9\s+Refresh provider/.test(line)));
+  assert.match(wide, /t\s+Replay resets.*Shift\+drag\s+Select text/);
+  assert.doesNotMatch(wide, /Controls|Legend|Project|─/);
+  assert.ok(wide.split('\n').every((line) => cellWidth(line) <= 64));
+  assert.ok(narrow.split('\n').every((line) => cellWidth(line) <= 48));
 });
 
 test('reset replay controls only appear after a reset has been detected', () => {
@@ -294,7 +382,7 @@ test('reset replay controls only appear after a reset has been detected', () => 
   }));
 
   assert.doesNotMatch(helpWithoutHistory, /replay detected resets/);
-  assert.match(helpWithHistory, /t\s+replay detected resets/);
+  assert.match(helpWithHistory, /t\s+Replay resets/);
   assert.doesNotMatch(footerWithoutHistory, /t replay/);
   assert.match(footerWithHistory, /t replay/);
 });
@@ -331,13 +419,16 @@ test('reset history selection wraps in both directions', () => {
   assert.equal(selectResetHistoryEntry([], 0), null);
 });
 
-test('npx help explains how to install TokensLeft as a command', () => {
+test('npx help highlights system installation and source code', () => {
   const regular = stripBlessedTags(formatHelp({ width: 64 }));
   const npx = stripBlessedTags(formatHelp({ npxMode: true, width: 64 }));
 
   assert.doesNotMatch(regular, /npm i -g tokensleft/);
-  assert.match(npx, /Install as a command/);
+  assert.doesNotMatch(regular, /Install on this system/);
+  assert.match(npx, /Install on this system/);
   assert.match(npx, /npm i -g tokensleft/);
+  assert.doesNotMatch(npx, /Install as a command/);
+  assert.match(npx, /Source code\s+https:\/\/github\.com\/tokensleft\/tokensleft/);
   assert.doesNotMatch(npx, /then run/);
 });
 
