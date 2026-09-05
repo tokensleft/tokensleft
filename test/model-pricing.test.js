@@ -132,21 +132,15 @@ test('OpenAI long-context pricing switches the whole request above 272K', () => 
   assert.ok(Math.abs(long - 3.0451) < 1e-12);
 });
 
-test('Claude Sonnet 5 follows the temporary official promotional rate', () => {
+test('Claude Sonnet 5 pricing comes straight from the sources with no date-based override', () => {
   const entries = {
     'claude-sonnet-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   };
-  const during = findModelPricing('claude-sonnet-5', {
-    entries,
-    now: Date.parse('2026-08-31T23:59:59Z'),
-  });
-  const after = findModelPricing('claude-sonnet-5', {
-    entries,
-    now: Date.parse('2026-09-01T00:00:00Z'),
-  });
+  const pricing = findModelPricing('claude-sonnet-5', { entries });
+  const dated = findModelPricing('claude-sonnet-5-20260401', { entries });
 
-  assert.deepEqual([during.input, during.output, during.cacheRead], [2, 10, 0.2]);
-  assert.deepEqual([after.input, after.output, after.cacheRead], [3, 15, 0.3]);
+  assert.deepEqual([pricing.input, pricing.output, pricing.cacheRead], [3, 15, 0.3]);
+  assert.deepEqual([dated.input, dated.output], [3, 15]);
 });
 
 test('pricing refresh writes a last-known-good cache and a fresh cache skips network', async (t) => {

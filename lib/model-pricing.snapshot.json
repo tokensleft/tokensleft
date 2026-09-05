@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-07-19T03:54:23.550Z",
+  "generatedAt": "2026-09-05T16:20:37.777Z",
   "sources": {
     "litellm": {
-      "revision": "49ca04d8c3ddea336237ce6f3082dbc26d19e944",
-      "url": "https://raw.githubusercontent.com/BerriAI/litellm/49ca04d8c3ddea336237ce6f3082dbc26d19e944/model_prices_and_context_window.json"
+      "revision": "7d5b6456baaf8be6ac1a60db2b710566b5344adf",
+      "url": "https://raw.githubusercontent.com/BerriAI/litellm/7d5b6456baaf8be6ac1a60db2b710566b5344adf/model_prices_and_context_window.json"
     },
     "modelsDev": {
       "url": "https://models.dev/api.json"
@@ -65,6 +65,14 @@
       "cacheWrite": 12.5,
       "context": 1000000
     },
+    "claude-fable-5-1": {
+      "input": 10,
+      "output": 50,
+      "source": "LiteLLM",
+      "cacheRead": 0.25,
+      "cacheWrite": 12.5,
+      "context": 1000000
+    },
     "claude-haiku-4-5": {
       "input": 1,
       "output": 5,
@@ -80,6 +88,22 @@
       "cacheRead": 0.1,
       "cacheWrite": 1.25,
       "context": 200000
+    },
+    "claude-mythos-5": {
+      "input": 10,
+      "output": 50,
+      "source": "LiteLLM",
+      "cacheRead": 1,
+      "cacheWrite": 12.5,
+      "context": 1000000
+    },
+    "claude-mythos-preview": {
+      "input": 10,
+      "output": 50,
+      "source": "LiteLLM",
+      "cacheRead": 1,
+      "cacheWrite": 12.5,
+      "context": 1000000
     },
     "claude-opus-4-1": {
       "input": 15,
@@ -161,6 +185,14 @@
       "cacheWrite": 6.25,
       "context": 1000000
     },
+    "claude-opus-5": {
+      "input": 5,
+      "output": 25,
+      "source": "LiteLLM",
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "context": 1000000
+    },
     "claude-sonnet-4-20250514": {
       "input": 3,
       "output": 15,
@@ -228,10 +260,10 @@
     "claude-sonnet-5": {
       "input": 2,
       "output": 10,
+      "source": "LiteLLM",
       "cacheRead": 0.2,
       "cacheWrite": 2.5,
-      "context": 1000000,
-      "source": "models.dev"
+      "context": 1000000
     },
     "codex-mini-latest": {
       "input": 1.5,
@@ -239,6 +271,30 @@
       "source": "LiteLLM",
       "cacheRead": 0.375,
       "context": 200000
+    },
+    "deep-research-max-preview-04-2026": {
+      "input": 2,
+      "output": 12,
+      "cacheRead": 0.2,
+      "inputAbove": 4,
+      "outputAbove": 18,
+      "cacheReadAbove": 0.4,
+      "threshold": 200000,
+      "context": 131072,
+      "tierMode": "whole",
+      "source": "models.dev"
+    },
+    "deep-research-preview-04-2026": {
+      "input": 2,
+      "output": 12,
+      "cacheRead": 0.2,
+      "inputAbove": 4,
+      "outputAbove": 18,
+      "cacheReadAbove": 0.4,
+      "threshold": 200000,
+      "context": 131072,
+      "tierMode": "whole",
+      "source": "models.dev"
     },
     "gemini-2.0-flash": {
       "input": 0.1,
@@ -309,7 +365,7 @@
       "input": 0.1,
       "output": 0.4,
       "source": "LiteLLM",
-      "cacheRead": 0.025,
+      "cacheRead": 0.01,
       "context": 1048576
     },
     "gemini-2.5-flash-lite-preview-09-2025": {
@@ -320,20 +376,20 @@
       "context": 1048576
     },
     "gemini-2.5-flash-native-audio-latest": {
-      "input": 0.3,
-      "output": 2.5,
+      "input": 0.5,
+      "output": 2,
       "source": "LiteLLM",
       "context": 1048576
     },
     "gemini-2.5-flash-native-audio-preview-09-2025": {
-      "input": 0.3,
-      "output": 2.5,
+      "input": 0.5,
+      "output": 2,
       "source": "LiteLLM",
       "context": 1048576
     },
     "gemini-2.5-flash-native-audio-preview-12-2025": {
-      "input": 0.3,
-      "output": 2.5,
+      "input": 0.5,
+      "output": 2,
       "source": "LiteLLM",
       "context": 1048576
     },
@@ -341,12 +397,12 @@
       "input": 0.3,
       "output": 2.5,
       "source": "LiteLLM",
-      "cacheRead": 0.075,
+      "cacheRead": 0.03,
       "context": 1048576
     },
     "gemini-2.5-flash-preview-tts": {
-      "input": 0.3,
-      "output": 2.5,
+      "input": 0.5,
+      "output": 10,
       "source": "LiteLLM+models.dev",
       "context": 8192
     },
@@ -364,16 +420,11 @@
       "tierMode": "marginal"
     },
     "gemini-2.5-pro-preview-tts": {
-      "input": 1.25,
-      "output": 10,
+      "input": 1,
+      "output": 20,
       "source": "LiteLLM",
       "cacheRead": 0.125,
-      "inputAbove": 2.5,
-      "outputAbove": 15,
-      "cacheReadAbove": 0.25,
-      "context": 1048576,
-      "threshold": 200000,
-      "tierMode": "marginal"
+      "context": 1048576
     },
     "gemini-3-flash-preview": {
       "input": 0.5,
@@ -381,6 +432,12 @@
       "source": "LiteLLM",
       "cacheRead": 0.05,
       "context": 1048576
+    },
+    "gemini-3-pro-image": {
+      "input": 2,
+      "output": 12,
+      "source": "LiteLLM",
+      "context": 65536
     },
     "gemini-3-pro-image-preview": {
       "input": 2,
@@ -401,6 +458,12 @@
       "threshold": 200000,
       "tierMode": "marginal"
     },
+    "gemini-3.1-flash-image": {
+      "input": 0.5,
+      "output": 3,
+      "source": "LiteLLM",
+      "context": 65536
+    },
     "gemini-3.1-flash-image-preview": {
       "input": 0.5,
       "output": 3,
@@ -414,6 +477,13 @@
       "cacheRead": 0.025,
       "context": 1048576
     },
+    "gemini-3.1-flash-lite-image": {
+      "input": 0.25,
+      "output": 1.5,
+      "source": "LiteLLM",
+      "cacheRead": 0.025,
+      "context": 65536
+    },
     "gemini-3.1-flash-lite-preview": {
       "input": 0.25,
       "output": 1.5,
@@ -426,6 +496,12 @@
       "output": 4.5,
       "source": "LiteLLM",
       "context": 131072
+    },
+    "gemini-3.1-flash-tts-preview": {
+      "input": 1,
+      "output": 20,
+      "context": 8192,
+      "source": "models.dev"
     },
     "gemini-3.1-pro-preview": {
       "input": 2,
@@ -458,6 +534,40 @@
       "output": 9,
       "source": "LiteLLM",
       "cacheRead": 0.15,
+      "context": 1048576
+    },
+    "gemini-3.5-flash-lite": {
+      "input": 0.3,
+      "output": 2.5,
+      "source": "LiteLLM",
+      "cacheRead": 0.03,
+      "context": 1048576
+    },
+    "gemini-3.5-live-translate-preview": {
+      "input": 3.5,
+      "output": 21,
+      "context": 16384,
+      "source": "models.dev"
+    },
+    "gemini-3.6-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "source": "LiteLLM",
+      "cacheRead": 0.075,
+      "context": 1048576
+    },
+    "gemini-3.7-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "source": "LiteLLM",
+      "cacheRead": 0.075,
+      "context": 1048576
+    },
+    "gemini-3.8-flash": {
+      "input": 0.75,
+      "output": 3.75,
+      "source": "LiteLLM",
+      "cacheRead": 0.075,
       "context": 1048576
     },
     "gemini-embedding-001": {
@@ -505,8 +615,14 @@
       "cacheRead": 0.01,
       "context": 1048576
     },
+    "gemini-live-2.5-flash-native-audio": {
+      "input": 0.5,
+      "output": 2,
+      "source": "LiteLLM",
+      "context": 1048576
+    },
     "gemini-live-2.5-flash-preview-native-audio-09-2025": {
-      "input": 0.3,
+      "input": 0.5,
       "output": 2,
       "source": "LiteLLM",
       "cacheRead": 0.075,
@@ -514,9 +630,9 @@
     },
     "gemini-omni-flash-preview": {
       "input": 1.5,
-      "output": 17.5,
-      "context": 131072,
-      "source": "models.dev"
+      "output": 9,
+      "source": "LiteLLM",
+      "context": 1048576
     },
     "gemini-pro-latest": {
       "input": 1.25,
@@ -639,6 +755,22 @@
       "input": 1.4,
       "output": 4.4,
       "cacheRead": 0.26,
+      "cacheWrite": 0,
+      "context": 1000000,
+      "source": "models.dev"
+    },
+    "glm-5.3": {
+      "input": 1.4,
+      "output": 4.4,
+      "cacheRead": 0.26,
+      "cacheWrite": 0,
+      "context": 1000000,
+      "source": "models.dev"
+    },
+    "glm-5.3-flash": {
+      "input": 0.075,
+      "output": 0.25,
+      "cacheRead": 0.015,
       "cacheWrite": 0,
       "context": 1000000,
       "source": "models.dev"
@@ -1024,13 +1156,13 @@
       "input": 15,
       "output": 120,
       "source": "LiteLLM",
-      "context": 128000
+      "context": 400000
     },
     "gpt-5-pro-2025-10-06": {
       "input": 15,
       "output": 120,
       "source": "LiteLLM",
-      "context": 128000
+      "context": 400000
     },
     "gpt-5-search-api": {
       "input": 1.25,
@@ -1252,60 +1384,82 @@
       "context": 1050000
     },
     "gpt-5.6": {
-      "input": 5,
-      "output": 30,
-      "cacheRead": 0.5,
-      "cacheWrite": 6.25,
-      "inputAbove": 10,
-      "outputAbove": 45,
-      "cacheReadAbove": 1,
-      "cacheWriteAbove": 12.5,
+      "input": 4,
+      "output": 20,
+      "source": "LiteLLM+models.dev",
+      "cacheRead": 0.4,
+      "cacheWrite": 5,
+      "context": 922000,
+      "inputAbove": 8,
+      "outputAbove": 30,
+      "cacheReadAbove": 0.8,
+      "cacheWriteAbove": 10,
       "threshold": 272000,
-      "context": 1050000,
-      "tierMode": "whole",
-      "source": "models.dev"
+      "tierMode": "whole"
+    },
+    "gpt-5.6-cyber": {
+      "input": 12.5,
+      "output": 75,
+      "source": "LiteLLM",
+      "cacheRead": 1.25,
+      "cacheWrite": 15.625,
+      "context": 400000
     },
     "gpt-5.6-luna": {
-      "input": 1,
-      "output": 6,
-      "cacheRead": 0.1,
-      "cacheWrite": 1.25,
-      "inputAbove": 2,
-      "outputAbove": 9,
-      "cacheReadAbove": 0.2,
-      "cacheWriteAbove": 2.5,
+      "input": 0.2,
+      "output": 1.2,
+      "source": "LiteLLM+models.dev",
+      "cacheRead": 0.02,
+      "cacheWrite": 0.25,
+      "context": 922000,
+      "inputAbove": 0.4,
+      "outputAbove": 1.8,
+      "cacheReadAbove": 0.04,
+      "cacheWriteAbove": 0.5,
       "threshold": 272000,
-      "context": 1050000,
-      "tierMode": "whole",
-      "source": "models.dev"
+      "tierMode": "whole"
     },
     "gpt-5.6-sol": {
-      "input": 5,
-      "output": 30,
-      "cacheRead": 0.5,
-      "cacheWrite": 6.25,
-      "inputAbove": 10,
-      "outputAbove": 45,
-      "cacheReadAbove": 1,
-      "cacheWriteAbove": 12.5,
+      "input": 4,
+      "output": 20,
+      "source": "LiteLLM+models.dev",
+      "cacheRead": 0.4,
+      "cacheWrite": 5,
+      "context": 922000,
+      "inputAbove": 8,
+      "outputAbove": 30,
+      "cacheReadAbove": 0.8,
+      "cacheWriteAbove": 10,
       "threshold": 272000,
-      "context": 1050000,
-      "tierMode": "whole",
-      "source": "models.dev"
+      "tierMode": "whole"
     },
     "gpt-5.6-terra": {
-      "input": 2.5,
-      "output": 15,
-      "cacheRead": 0.25,
-      "cacheWrite": 3.125,
-      "inputAbove": 5,
-      "outputAbove": 22.5,
-      "cacheReadAbove": 0.5,
-      "cacheWriteAbove": 6.25,
+      "input": 2,
+      "output": 12,
+      "source": "LiteLLM+models.dev",
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "context": 922000,
+      "inputAbove": 4,
+      "outputAbove": 18,
+      "cacheReadAbove": 0.4,
+      "cacheWriteAbove": 5,
       "threshold": 272000,
-      "context": 1050000,
-      "tierMode": "whole",
-      "source": "models.dev"
+      "tierMode": "whole"
+    },
+    "gpt-6-astra": {
+      "input": 10,
+      "output": 50,
+      "source": "LiteLLM+models.dev",
+      "cacheRead": 1,
+      "cacheWrite": 12.5,
+      "context": 922000,
+      "inputAbove": 20,
+      "outputAbove": 75,
+      "cacheReadAbove": 2,
+      "cacheWriteAbove": 25,
+      "threshold": 272000,
+      "tierMode": "whole"
     },
     "gpt-audio": {
       "input": 2.5,
@@ -1383,17 +1537,24 @@
     },
     "gpt-realtime-2": {
       "input": 4,
-      "output": 16,
+      "output": 24,
       "source": "LiteLLM",
       "cacheRead": 0.4,
-      "context": 32000
+      "context": 128000
     },
     "gpt-realtime-2.1": {
       "input": 4,
       "output": 24,
+      "source": "LiteLLM",
       "cacheRead": 0.4,
-      "context": 128000,
-      "source": "models.dev"
+      "context": 128000
+    },
+    "gpt-realtime-2.1-mini": {
+      "input": 0.6,
+      "output": 2.4,
+      "source": "LiteLLM",
+      "cacheRead": 0.06,
+      "context": 128000
     },
     "gpt-realtime-2025-08-28": {
       "input": 4,
@@ -1406,7 +1567,7 @@
       "input": 0.6,
       "output": 2.4,
       "source": "LiteLLM",
-      "context": 128000
+      "context": 32000
     },
     "gpt-realtime-mini-2025-10-06": {
       "input": 0.6,
@@ -1495,6 +1656,18 @@
       "input": 3,
       "output": 15,
       "cacheRead": 0.3,
+      "context": 1048576,
+      "source": "models.dev"
+    },
+    "lyria-3-clip-preview": {
+      "input": 0,
+      "output": 0,
+      "context": 1048576,
+      "source": "models.dev"
+    },
+    "lyria-3-pro-preview": {
+      "input": 0,
+      "output": 0,
       "context": 1048576,
       "source": "models.dev"
     },
