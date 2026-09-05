@@ -41,7 +41,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      - run: npm run lint
+      # ESLint 10 needs Node 20.19+, so lint runs on the Node 22 job rather
+      # than on the oldest supported runtime.
+      - if: matrix.coverage == true
+        run: npm run lint
       - run: npm test
       - run: node bin/tokensleft.js --demo --once
       - if: matrix.coverage == true
