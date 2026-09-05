@@ -1,11 +1,12 @@
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readRefreshMs } from '../lib/env.js';
+import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { configPath, writeFileAtomic } from '../lib/fsx.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 
 const CLOUD_CODE_URLS = [
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
@@ -215,28 +216,24 @@ async function cacheToken(accessToken, expiresInSeconds) {
 // The state DB is owned by Antigravity and its envelope is write-hostile, so
 // refreshed tokens are cached in ~/.tokensleft instead of being written back.
 async function refreshAccessToken(refreshToken) {
-  let response;
+  const response = await postTokenRefresh(TOKEN_REFRESH_URL, {
+    form: {
+      client_id: OAUTH_CLIENT_ID,
+      client_secret: OAUTH_CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    },
+  });
 
-  try {
-    response = await fetch(TOKEN_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: OAUTH_CLIENT_ID,
-        client_secret: OAUTH_CLIENT_SECRET,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }).toString(),
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch {
+  if (response.failure) {
     return null;
   }
 
-  const body = parseJson(await response.text());
+  const { body } = response;
 
   if (response.status === 400 || response.status === 401) {
-    throw `token refresh rejected (${body?.error || response.status}) — sign in to Antigravity again`;
+    const code = oauthErrorCode(body) || response.status;
+    throw new ReloginRequiredError(`token refresh rejected (${code}) — sign in to Antigravity again`, { code: String(code) });
   }
 
   if (!response.ok || !body?.access_token) {
@@ -356,9 +353,9 @@ export async function createAntigravityProvider(env) {
     return null;
   }
 
-  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
+  const readOnly = readOnlyMode(env);
 
-  return {
+  return createSingleAccountProvider({
     id: 'antigravity',
     title: 'Antigravity',
     refreshMs: readRefreshMs(env, ['ANTIGRAVITY_REFRESH_SECONDS', 'ANTIGRAVITY_REFRESH_SEC'], DEFAULT_REFRESH_MS),
@@ -371,11 +368,11 @@ export async function createAntigravityProvider(env) {
         const value = await readStateDbValue(dbPath);
         tokens = value ? unwrapOAuthEnvelope(value) : null;
       } catch (error) {
-        return { ok: false, status: 'DB', error: `cannot read Antigravity state: ${error.message}`, ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('DB', `cannot read Antigravity state: ${error.message}`, startedAt);
       }
 
       if (!tokens) {
-        return { ok: false, status: 'CRED', error: 'No Antigravity OAuth state found. Start Antigravity and sign in first.', ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('CRED', 'No Antigravity OAuth state found. Start Antigravity and sign in first.', startedAt);
       }
 
       const nowSec = Math.floor(Date.now() / 1000);
@@ -392,13 +389,7 @@ export async function createAntigravityProvider(env) {
       }
 
       if (readOnly && candidates.length === 0) {
-        return {
-          ok: false,
-          status: 'EXPIRED',
-          error: 'Antigravity OAuth token expired or unavailable in read-only mode. Sign in to Antigravity again.',
-          ms: Date.now() - startedAt,
-          items: [],
-        };
+        return errorSnapshot('EXPIRED', 'Antigravity OAuth token expired or unavailable in read-only mode. Sign in to Antigravity again.', startedAt);
       }
 
       try {
@@ -420,13 +411,7 @@ export async function createAntigravityProvider(env) {
         // Refresh only on evidence of auth failure (or no usable token) so a
         // Cloud Code outage doesn't burn a refresh grant every probe.
         if (!result.data && readOnly && sawAuthFailure) {
-          return {
-            ok: false,
-            status: 'EXPIRED',
-            error: 'Antigravity OAuth token was rejected in read-only mode. Sign in to Antigravity again.',
-            ms: Date.now() - startedAt,
-            items: [],
-          };
+          return errorSnapshot('EXPIRED', 'Antigravity OAuth token was rejected in read-only mode. Sign in to Antigravity again.', startedAt);
         }
 
         if (!result.data && !readOnly && tokens.refreshToken && (sawAuthFailure || candidates.length === 0)) {
@@ -437,43 +422,26 @@ export async function createAntigravityProvider(env) {
           }
         }
 
-        const ms = Date.now() - startedAt;
-
         if (!result.data) {
-          return {
-            ok: false,
-            status: result.authFailed ? 401 : 'ERR',
-            error: result.authFailed
-              ? 'Antigravity session expired. Start Antigravity and sign in again.'
-              : 'Cloud Code request failed. Try again later.',
-            ms,
-            items: [],
-          };
+          return result.authFailed
+            ? errorSnapshot(401, 'Antigravity session expired. Start Antigravity and sign in again.', startedAt)
+            : errorSnapshot('ERR', 'Cloud Code request failed. Try again later.', startedAt);
         }
 
         const items = buildAntigravityItems(result.data);
 
         if (items.length === 0) {
-          return { ok: false, status: 'ERR', error: 'no model quota data in response', ms, items: [] };
+          return errorSnapshot('ERR', 'no model quota data in response', startedAt);
         }
 
-        return { ok: true, ms, plan: '', items };
+        return { ok: true, ms: Date.now() - startedAt, plan: '', items };
       } catch (error) {
-        const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
-        return { ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
+        if (isReloginRequired(error)) {
+          return errorSnapshot('EXPIRED', error.message, startedAt);
+        }
+
+        return errorSnapshot('ERR', `request failed: ${error.message}`, startedAt);
       }
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'antigravity');
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }

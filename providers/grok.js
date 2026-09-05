@@ -5,7 +5,7 @@ import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { formatNumber } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 
 const BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing';
 const SETTINGS_URL = 'https://cli-chat-proxy.grok.com/v1/settings';
@@ -96,7 +96,7 @@ export async function createGrokProvider(env) {
     return null;
   }
 
-  return {
+  return createSingleAccountProvider({
     id: 'grok',
     title: 'Grok',
     refreshMs: readRefreshMs(env, ['GROK_REFRESH_SECONDS', 'GROK_REFRESH_SEC'], DEFAULT_REFRESH_MS),
@@ -107,7 +107,7 @@ export async function createGrokProvider(env) {
       const picked = pickGrokToken(auth, Date.now(), env.GROK_TOKEN || '');
 
       if (picked.error) {
-        return { ok: false, status: 'CRED', error: picked.error, ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('CRED', picked.error, startedAt);
       }
 
       let billingResponse;
@@ -115,26 +115,25 @@ export async function createGrokProvider(env) {
       try {
         billingResponse = await fetch(BILLING_URL, { headers: grokHeaders(picked.token), signal: AbortSignal.timeout(15000) });
       } catch (error) {
-        return { ok: false, status: 'ERR', error: `request failed: ${error.message}`, ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('ERR', `request failed: ${error.message}`, startedAt);
       }
 
       const text = await billingResponse.text();
-      const ms = Date.now() - startedAt;
 
       if (billingResponse.status === 401 || billingResponse.status === 403) {
-        return { ok: false, status: billingResponse.status, error: 'Grok auth expired. Run `grok login` again.', ms, items: [] };
+        return errorSnapshot(billingResponse.status, 'Grok auth expired. Run `grok login` again.', startedAt);
       }
 
       const billing = parseJson(text);
 
       if (!billingResponse.ok || !billing) {
-        return { ok: false, status: billingResponse.status, error: `HTTP ${billingResponse.status}`, body: text.slice(0, 300), ms, items: [] };
+        return errorSnapshot(billingResponse.status, `HTTP ${billingResponse.status}`, startedAt, { body: text.slice(0, 300) });
       }
 
       const items = buildGrokItems(billing);
 
       if (items.length === 0) {
-        return { ok: false, status: 'ERR', error: 'billing response shape changed', body: text.slice(0, 300), ms, items: [] };
+        return errorSnapshot('ERR', 'billing response shape changed', startedAt, { body: text.slice(0, 300) });
       }
 
       let plan = '';
@@ -151,17 +150,5 @@ export async function createGrokProvider(env) {
 
       return { ok: true, ms: Date.now() - startedAt, plan, items };
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'grok');
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }

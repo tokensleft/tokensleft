@@ -1,14 +1,14 @@
 import { access, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readRefreshMs } from '../lib/env.js';
+import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
-import { escapeBlessed } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
 import { calculateModelCost } from '../lib/model-pricing.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 
 const TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
 const LOAD_CODE_ASSIST_URL = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
@@ -111,29 +111,24 @@ async function refreshCreds(credsPath, credentialState) {
   }
 
   const client = await loadOauthClientCreds();
-  let response;
+  const response = await postTokenRefresh(TOKEN_REFRESH_URL, {
+    form: {
+      client_id: client.clientId,
+      client_secret: client.clientSecret,
+      refresh_token: creds.refresh_token,
+      grant_type: 'refresh_token',
+    },
+  });
 
-  try {
-    response = await fetch(TOKEN_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: client.clientId,
-        client_secret: client.clientSecret,
-        refresh_token: creds.refresh_token,
-        grant_type: 'refresh_token',
-      }).toString(),
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch {
+  if (response.failure) {
     return null;
   }
 
-  const body = parseJson(await response.text());
+  const { body } = response;
 
   if (response.status === 400 || response.status === 401) {
-    const code = body?.error || response.status;
-    throw `token refresh rejected (${code}) — run \`gemini\` and sign in again`;
+    const code = oauthErrorCode(body) || response.status;
+    throw new ReloginRequiredError(`token refresh rejected (${code}) — run \`gemini\` and sign in again`, { code: String(code) });
   }
 
   if (!response.ok || !body?.access_token) {
@@ -159,7 +154,7 @@ async function refreshCreds(credsPath, credentialState) {
   try {
     await writeFileAtomic(credsPath, serialized, { expectedContent: credentialState.raw });
   } catch (error) {
-    throw new Error(`OAuth token refreshed but could not safely update Gemini credentials: ${error.message}`);
+    throw new Error(`OAuth token refreshed but could not safely update Gemini credentials: ${error.message}`, { cause: error });
   }
 
   credentialState.raw = serialized;
@@ -495,14 +490,14 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
   const authType = await loadSettingsAuthType(dir);
 
   if (authType && authType !== 'oauth-personal') {
-    return { ok: false, status: 'AUTH', error: `Gemini auth type "${authType}" is not supported (oauth-personal only).`, ms: Date.now() - startedAt, items: [] };
+    return errorSnapshot('AUTH', `Gemini auth type "${authType}" is not supported (oauth-personal only).`, startedAt);
   }
 
   const raw = await readFile(credsPath, 'utf8').catch(() => '');
   const creds = parseJson(raw);
 
   if (!creds?.access_token && !creds?.refresh_token) {
-    return { ok: false, status: 'CRED', error: 'Not logged in. Run `gemini` and sign in.', ms: Date.now() - startedAt, items: [] };
+    return errorSnapshot('CRED', 'Not logged in. Run `gemini` and sign in.', startedAt);
   }
 
   const credentialState = { raw, creds };
@@ -511,7 +506,7 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
   const expiryMs = expiry > 10_000_000_000 ? expiry : expiry * 1000;
 
   if (readOnly && (!token || (Number.isFinite(expiryMs) && expiryMs <= Date.now()))) {
-    return { ok: false, status: 'EXPIRED', error: 'Gemini OAuth token expired or unavailable in read-only mode. Run `gemini` and sign in again.', ms: Date.now() - startedAt, items: [] };
+    return errorSnapshot('EXPIRED', 'Gemini OAuth token expired or unavailable in read-only mode. Run `gemini` and sign in again.', startedAt);
   }
 
   if (!readOnly && credsNeedRefresh(creds)) {
@@ -521,10 +516,10 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
       if (refreshed) {
         token = refreshed;
       } else if (!token) {
-        return { ok: false, status: 'CRED', error: 'Not logged in. Run `gemini` and sign in.', ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('CRED', 'Not logged in. Run `gemini` and sign in.', startedAt);
       }
-    } catch (message) {
-      return { ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
+    } catch (error) {
+      return errorSnapshot(isReloginRequired(error) ? 'EXPIRED' : 'ERR', error.message, startedAt);
     }
   }
 
@@ -548,7 +543,7 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
     const assistData = assistResponse.ok ? parseJson(await assistResponse.text()) : null;
 
     if (assistResponse.status === 401 || assistResponse.status === 403) {
-      return { ok: false, status: assistResponse.status, error: 'Gemini session expired. Run `gemini` and sign in again.', ms: Date.now() - startedAt, items: [] };
+      return errorSnapshot(assistResponse.status, 'Gemini session expired. Run `gemini` and sign in again.', startedAt);
     }
 
     const idTokenPayload = decodeJwtPayload(creds.id_token);
@@ -559,17 +554,17 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
     const ms = Date.now() - startedAt;
 
     if (quotaResponse.status === 401 || quotaResponse.status === 403) {
-      return { ok: false, status: quotaResponse.status, error: 'Gemini session expired. Run `gemini` and sign in again.', ms, items: [] };
+      return errorSnapshot(quotaResponse.status, 'Gemini session expired. Run `gemini` and sign in again.', startedAt);
     }
 
     if (!quotaResponse.ok) {
-      return { ok: false, status: quotaResponse.status, error: `quota request failed (HTTP ${quotaResponse.status})`, body: quotaText.slice(0, 300), ms, items: [] };
+      return errorSnapshot(quotaResponse.status, `quota request failed (HTTP ${quotaResponse.status})`, startedAt, { body: quotaText.slice(0, 300) });
     }
 
     const quotaData = parseJson(quotaText);
 
     if (!quotaData) {
-      return { ok: false, status: 'ERR', error: 'quota response invalid', ms, items: [] };
+      return errorSnapshot('ERR', 'quota response invalid', startedAt);
     }
 
     const items = buildGeminiItems(quotaData);
@@ -583,8 +578,11 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
       items,
     };
   } catch (error) {
-    const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
-    return { ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
+    if (isReloginRequired(error)) {
+      return errorSnapshot('EXPIRED', error.message, startedAt);
+    }
+
+    return errorSnapshot('ERR', `request failed: ${error.message}`, startedAt);
   }
 }
 
@@ -597,12 +595,13 @@ export async function createGeminiProvider(env) {
   }
 
   const scanner = createChatScanner(dir);
-  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
+  const readOnly = readOnlyMode(env);
 
-  return {
+  return createSingleAccountProvider({
     id: 'gemini',
     title: 'Gemini',
     refreshMs: readRefreshMs(env, ['GEMINI_REFRESH_SECONDS', 'GEMINI_REFRESH_SEC'], DEFAULT_REFRESH_MS),
+    localOpts: GEMINI_LOCAL_OPTS,
 
     async fetch() {
       const [local, snapshot] = await Promise.all([
@@ -612,17 +611,5 @@ export async function createGeminiProvider(env) {
       snapshot.local = local;
       return snapshot;
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'gemini', GEMINI_LOCAL_OPTS);
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }

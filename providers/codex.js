@@ -1,13 +1,14 @@
 import { access, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { readRefreshMs } from '../lib/env.js';
+import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { formatCountdown } from '../lib/format.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
 import { fetchJson, parseJson } from '../lib/http.js';
 import { calculateModelCost } from '../lib/model-pricing.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 
 export { renderSingleAccount } from '../lib/provider-render.js';
@@ -163,28 +164,23 @@ async function refreshAuth(authPath, authState) {
     return null;
   }
 
-  let response;
+  const response = await postTokenRefresh(TOKEN_REFRESH_URL, {
+    form: {
+      grant_type: 'refresh_token',
+      client_id: OAUTH_CLIENT_ID,
+      refresh_token: auth.tokens.refresh_token,
+    },
+  });
 
-  try {
-    response = await fetch(TOKEN_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: OAUTH_CLIENT_ID,
-        refresh_token: auth.tokens.refresh_token,
-      }).toString(),
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch {
+  if (response.failure) {
     return null;
   }
 
-  const body = parseJson(await response.text());
+  const { body } = response;
 
   if (response.status === 400 || response.status === 401) {
-    const code = body?.error?.code || body?.error || body?.code || response.status;
-    throw `token refresh rejected (${code}) — run \`codex\` to log in again`;
+    const code = oauthErrorCode(body) || response.status;
+    throw new ReloginRequiredError(`token refresh rejected (${code}) — run \`codex\` to log in again`, { code: String(code) });
   }
 
   if (!response.ok || !body?.access_token) {
@@ -207,7 +203,7 @@ async function refreshAuth(authPath, authState) {
   try {
     await writeFileAtomic(authPath, serialized, { expectedContent: authState.raw });
   } catch (error) {
-    throw new Error(`OAuth token refreshed but could not safely update Codex credentials: ${error.message}`);
+    throw new Error(`OAuth token refreshed but could not safely update Codex credentials: ${error.message}`, { cause: error });
   }
 
   authState.raw = serialized;
@@ -659,12 +655,13 @@ export async function createCodexProvider(env, {
   }
 
   const scanner = createRolloutScanner(dirname(authPath));
-  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
+  const readOnly = readOnlyMode(env);
 
-  return {
+  return createSingleAccountProvider({
     id: 'codex',
     title: 'Codex',
     refreshMs: readRefreshMs(env, ['CODEX_REFRESH_SECONDS', 'CODEX_REFRESH_SEC'], DEFAULT_REFRESH_MS),
+    localOpts: CODEX_LOCAL_OPTS,
 
     async fetch() {
       const [local, snapshot] = await Promise.all([
@@ -684,21 +681,7 @@ export async function createCodexProvider(env, {
       snapshot.local = local;
       return snapshot;
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'codex', CODEX_LOCAL_OPTS);
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || [])
-        .filter((item) => item.kind !== 'info')
-        .map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }
 
 async function fetchCodexUsage(authPath, readOnly = false) {
@@ -708,13 +691,13 @@ async function fetchCodexUsage(authPath, readOnly = false) {
   try {
     authState = await loadAuth(authPath);
   } catch (error) {
-    return { ok: false, status: 'CRED', error: error.message, ms: Date.now() - startedAt, items: [] };
+    return errorSnapshot('CRED', error.message, startedAt);
   }
 
   const { auth } = authState;
 
   if (!auth.tokens?.access_token) {
-    return { ok: false, status: 'APIKEY', error: 'Codex usage is not available for API-key auth. Run `codex` to log in with ChatGPT.', ms: Date.now() - startedAt, items: [] };
+    return errorSnapshot('APIKEY', 'Codex usage is not available for API-key auth. Run `codex` to log in with ChatGPT.', startedAt);
   }
 
   let token = auth.tokens.access_token;
@@ -722,8 +705,8 @@ async function fetchCodexUsage(authPath, readOnly = false) {
   if (!readOnly && authNeedsRefresh(auth)) {
     try {
       token = (await refreshAuth(authPath, authState)) || token;
-    } catch (message) {
-      return { ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
+    } catch (error) {
+      return errorSnapshot(isReloginRequired(error) ? 'EXPIRED' : 'ERR', error.message, startedAt);
     }
   }
 
@@ -741,22 +724,26 @@ async function fetchCodexUsage(authPath, readOnly = false) {
       }
     }
   } catch (error) {
-    const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
-    return { ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
+    if (isReloginRequired(error)) {
+      return errorSnapshot('EXPIRED', error.message, startedAt);
+    }
+
+    return errorSnapshot('ERR', `request failed: ${error.message}`, startedAt);
   }
 
   const text = await response.text();
-  const ms = Date.now() - startedAt;
 
   if (response.status === 401 || response.status === 403) {
-    return { ok: false, status: response.status, error: 'Token expired. Run `codex` to log in again.', ms, items: [] };
+    return errorSnapshot(response.status, 'Token expired. Run `codex` to log in again.', startedAt);
   }
 
   const data = parseJson(text);
 
   if (!response.ok || !data) {
-    return { ok: false, status: response.status, error: `HTTP ${response.status}`, body: text.slice(0, 300), ms, items: [] };
+    return errorSnapshot(response.status, `HTTP ${response.status}`, startedAt, { body: text.slice(0, 300) });
   }
+
+  const ms = Date.now() - startedAt;
 
   const headers = Object.fromEntries([...response.headers.entries()].map(([k, v]) => [k.toLowerCase(), v]));
 

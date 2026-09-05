@@ -5,7 +5,7 @@ import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
 import { aggregateUsageEvents } from '../lib/local-usage.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 
 // OpenCode's "Go" plan has no usage API; the CLI stores per-session cost in a
 // local SQLite DB, and the plan limits are fixed dollar amounts.
@@ -200,10 +200,11 @@ export async function createOpencodeProvider(env) {
     return null;
   }
 
-  return {
+  return createSingleAccountProvider({
     id: 'opencode',
     title: 'OpenCode',
     refreshMs: readRefreshMs(env, ['OPENCODE_REFRESH_SECONDS', 'OPENCODE_REFRESH_SEC'], DEFAULT_REFRESH_MS),
+    localOpts: OPENCODE_LOCAL_OPTS,
 
     async fetch() {
       const startedAt = Date.now();
@@ -235,7 +236,7 @@ export async function createOpencodeProvider(env) {
       try {
         rows = await loadCostRows(dbPath);
       } catch (error) {
-        return { ok: false, status: 'DB', error: `cannot read opencode.db: ${error.message}`, ms: Date.now() - startedAt, items: [], local };
+        return errorSnapshot('DB', `cannot read opencode.db: ${error.message}`, startedAt, { local });
       }
 
       return {
@@ -246,17 +247,5 @@ export async function createOpencodeProvider(env) {
         local,
       };
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'opencode', OPENCODE_LOCAL_OPTS);
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || []).filter((item) => item.kind !== 'empty').map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }

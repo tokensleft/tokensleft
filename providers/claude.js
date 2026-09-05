@@ -5,13 +5,15 @@ import { platform, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { claudeConfigDir } from '../lib/claude-settings.js';
 import { writeFileAtomic } from '../lib/fsx.js';
-import { readRefreshMs } from '../lib/env.js';
+import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { escapeBlessed, formatCountdown, formatDateTime, truncateTagged } from '../lib/format.js';
 import { parseJson, parseRetryAfterDate } from '../lib/http.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { calculateModelCost } from '../lib/model-pricing.js';
+import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
 import { COLOR } from '../lib/palette.js';
+import { errorSnapshot, multiAccountHeaderStatus, usageAlertItems } from '../lib/provider.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -372,34 +374,29 @@ async function resolveCredentials(account, readOnly = false, now = Date.now()) {
 // a user-facing string when the refresh token itself is dead (re-login needed).
 async function refreshOAuthToken(persist, credentialState) {
   const { parsed, oauth } = credentialState;
-  let response;
+  const response = await postTokenRefresh(TOKEN_REFRESH_URL, {
+    json: {
+      grant_type: 'refresh_token',
+      refresh_token: oauth.refreshToken,
+      client_id: OAUTH_CLIENT_ID,
+      scope: OAUTH_SCOPES,
+    },
+  });
 
-  try {
-    response = await fetch(TOKEN_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: oauth.refreshToken,
-        client_id: OAUTH_CLIENT_ID,
-        scope: OAUTH_SCOPES,
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch {
+  if (response.failure) {
     return null;
   }
 
-  const body = parseJson(await response.text());
+  const { body } = response;
 
   if (response.status === 400 || response.status === 401) {
-    const code = body?.error || body?.error_description || '';
+    const code = oauthErrorCode(body);
 
     // Only `invalid_grant` actually means the login is dead. A 400/401 without
     // an OAuth error code is far more likely an HTML proxy or WAF page, and
     // telling the user to /login again cannot fix a network appliance.
     if (code === 'invalid_grant') {
-      throw `token refresh rejected (${code}) — run \`claude\` and /login again`;
+      throw new ReloginRequiredError(`token refresh rejected (${code}) — run \`claude\` and /login again`, { code });
     }
 
     credentialState.warnings.push(`token refresh got HTTP ${response.status}${code ? ` (${code})` : ''} — check your network or proxy`);
@@ -550,8 +547,13 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
   if (credentials.refresh && tokenNeedsRefresh(credentials.expiresAt)) {
     try {
       token = (await credentials.refresh()) || token;
-    } catch (message) {
-      return { name: account.name, source: account.source, plan: credentials.plan, ok: false, status: 'EXPIRED', error: String(message), ms: Date.now() - startedAt, items: [] };
+    } catch (error) {
+      return {
+        name: account.name,
+        source: account.source,
+        plan: credentials.plan,
+        ...errorSnapshot(isReloginRequired(error) ? 'EXPIRED' : 'ERR', error.message, startedAt),
+      };
     }
   }
 
@@ -592,8 +594,13 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
       }
     }
   } catch (error) {
-    const message = typeof error === 'string' ? error : `request failed: ${error.message}`;
-    return { name: account.name, source: account.source, plan: credentials.plan, ok: false, status: typeof error === 'string' ? 'EXPIRED' : 'ERR', error: message, ms: Date.now() - startedAt, items: [] };
+    const relogin = isReloginRequired(error);
+    return {
+      name: account.name,
+      source: account.source,
+      plan: credentials.plan,
+      ...errorSnapshot(relogin ? 'EXPIRED' : 'ERR', relogin ? error.message : `request failed: ${error.message}`, startedAt),
+    };
   }
 
   const text = await response.text();
@@ -842,7 +849,7 @@ export async function createClaudeProvider(env, options = {}) {
     }
   }
 
-  const readOnly = /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
+  const readOnly = readOnlyMode(env);
 
   return {
     id: 'claude',
@@ -868,18 +875,12 @@ export async function createClaudeProvider(env, options = {}) {
     },
 
     headerStatus(snapshot) {
-      if (snapshot.fatal) {
-        return { ok: false, text: 'ERR' };
-      }
-
-      const counted = snapshot.results.filter((result) => result.status !== 'DUP');
-
-      if (counted.length === 0) {
+      // Transcripts on disk but no usable account: local usage only.
+      if (!snapshot.fatal && snapshot.results.every((result) => result.status === 'DUP')) {
         return { ok: true, text: 'LOCAL' };
       }
 
-      const okCount = counted.filter((result) => result.ok).length;
-      return { ok: okCount === counted.length, text: `${okCount}/${counted.length} OK` };
+      return multiAccountHeaderStatus(snapshot, { countable: (result) => result.status !== 'DUP' });
     },
 
     alertItems(snapshot) {
@@ -887,12 +888,7 @@ export async function createClaudeProvider(env, options = {}) {
         return [];
       }
 
-      return snapshot.results.flatMap((result) => result.items.map((item) => ({
-        key: item.key,
-        label: `${result.name} ${item.label}`,
-        percent: item.percent,
-        resetAt: item.resetAt,
-      })));
+      return snapshot.results.flatMap((result) => usageAlertItems(result.items, result.name));
     },
 
     nextDelayMs(snapshot, base) {

@@ -2,14 +2,16 @@ import { readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readRefreshMs, splitCsv } from '../lib/env.js';
+import { readOnlyMode, readRefreshMs, splitCsv } from '../lib/env.js';
 import { buildUsageItem } from '../lib/forecast.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { escapeBlessed, formatNumber } from '../lib/format.js';
 import { parseJson } from '../lib/http.js';
 import { createLocalUsageScanner, jsonlRefresher, renderLocalUsage } from '../lib/local-usage.js';
 import { calculateModelCost } from '../lib/model-pricing.js';
+import { postTokenRefresh } from '../lib/oauth.js';
 import { COLOR } from '../lib/palette.js';
+import { multiAccountHeaderStatus, usageAlertItems } from '../lib/provider.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 export const DEFAULT_KIMI_CODE_BASE_URL = 'https://api.kimi.com/coding/v1';
@@ -30,10 +32,6 @@ function isRecord(value) {
 
 function cleanEnvValue(value) {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-function readOnlyMode(env) {
-  return /^(1|true|yes)$/i.test(env.TOKENSLEFT_READ_ONLY || '');
 }
 
 export function kimiCredentialPaths(env = {}, home = homedir()) {
@@ -218,6 +216,9 @@ class KimiRefreshError extends Error {
     super(message);
     this.name = 'KimiRefreshError';
     this.unauthorized = unauthorized;
+    // Lets lib/oauth.js isReloginRequired() treat a dead Kimi login like any
+    // other provider's without sharing a class hierarchy.
+    this.relogin = unauthorized;
   }
 }
 
@@ -260,24 +261,17 @@ export async function refreshKimiCredential(credential, env = {}, {
   let lastError = null;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    let response;
+    const response = await postTokenRefresh(url, {
+      form: {
+        client_id: KIMI_OAUTH_CLIENT_ID,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      },
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
 
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        body: new URLSearchParams({
-          client_id: KIMI_OAUTH_CLIENT_ID,
-          grant_type: 'refresh_token',
-          refresh_token: refreshToken,
-        }).toString(),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      lastError = new KimiRefreshError(`Kimi Code token refresh failed: ${error?.message || String(error)}`);
+    if (response.failure) {
+      lastError = new KimiRefreshError(`Kimi Code token refresh failed: ${response.failure?.message || String(response.failure)}`);
 
       if (attempt < 2) {
         await sleep(2 ** attempt * 1000);
@@ -287,8 +281,7 @@ export async function refreshKimiCredential(credential, env = {}, {
       throw lastError;
     }
 
-    const text = await response.text();
-    const data = parseJson(text) || {};
+    const data = response.body || {};
     const errorCode = typeof data.error === 'string' ? data.error : '';
 
     if (response.status === 401 || response.status === 403 || errorCode === 'invalid_grant') {
@@ -1020,7 +1013,7 @@ async function fetchKimiAccountUsage(account, env, readOnly, loadModels) {
     }
   }
 
-  let modelsToken = token;
+  const initialToken = token;
   let modelsPromise = loadModels(account, token);
   let response;
 
@@ -1074,8 +1067,7 @@ async function fetchKimiAccountUsage(account, env, readOnly, loadModels) {
     return finish(errorSnapshot('ERR', 'Kimi Code usage response was not valid JSON.', startedAt, text));
   }
 
-  if (token !== modelsToken) {
-    modelsToken = token;
+  if (token !== initialToken) {
     modelsPromise = loadModels(account, token);
   }
 
@@ -1287,28 +1279,14 @@ export async function createKimiProvider(env) {
       return renderKimiSnapshot(snapshot, width, mode);
     },
 
-    headerStatus(snapshot) {
-      if (snapshot.fatal) {
-        return { ok: false, text: 'ERR' };
-      }
-
-      const okCount = snapshot.results.filter((result) => result.ok).length;
-      return { ok: okCount === snapshot.results.length, text: `${okCount}/${snapshot.results.length} OK` };
-    },
+    headerStatus: multiAccountHeaderStatus,
 
     alertItems(snapshot) {
       if (snapshot.fatal) {
         return [];
       }
 
-      return snapshot.results.flatMap((result) => result.items
-        .filter((item) => item.kind === 'usage')
-        .map((item) => ({
-          key: item.key,
-          label: [result.name, item.label].filter(Boolean).join(' '),
-          percent: item.percent,
-          resetAt: item.resetAt,
-        })));
+      return snapshot.results.flatMap((result) => usageAlertItems(result.items, result.name));
     },
   };
 }

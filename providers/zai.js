@@ -5,6 +5,7 @@ import { escapeBlessed, formatNumber, jsonPreview, maskKey } from '../lib/format
 import { fetchJsonResult } from '../lib/http.js';
 import { renderLocalUsage } from '../lib/local-usage.js';
 import { COLOR } from '../lib/palette.js';
+import { multiAccountHeaderStatus, usageAlertItems } from '../lib/provider.js';
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 import { createTranscriptScanner, isZaiModel } from './claude.js';
 
@@ -339,28 +340,14 @@ export async function createZaiProvider(env) {
       return renderZaiSnapshot(snapshot, width, mode);
     },
 
-    headerStatus(snapshot) {
-      if (snapshot.fatal) {
-        return { ok: false, text: 'ERR' };
-      }
-
-      const okCount = snapshot.results.filter((result) => result.ok).length;
-      return { ok: okCount === snapshot.results.length, text: `${okCount}/${snapshot.results.length} OK` };
-    },
+    headerStatus: multiAccountHeaderStatus,
 
     alertItems(snapshot) {
       if (snapshot.fatal) {
         return [];
       }
 
-      return snapshot.results.flatMap((result) => result.items
-        .filter((item) => item.kind === 'usage')
-        .map((item) => ({
-          key: item.key,
-          label: [result.account.name, item.label].filter(Boolean).join(' '),
-          percent: item.percent,
-          resetAt: item.resetAt,
-        })));
+      return snapshot.results.flatMap((result) => usageAlertItems(result.items, result.account.name));
     },
   };
 }

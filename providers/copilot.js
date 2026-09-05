@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
-import { renderSingleAccount } from '../lib/provider-render.js';
+import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 
 const USAGE_URL = 'https://api.github.com/copilot_internal/user';
 const MONTH_PERIOD_MS = 30 * 24 * 60 * 60 * 1000;
@@ -48,15 +48,43 @@ export async function findCopilotToken(env) {
   ];
 
   for (const file of ghHostsFiles) {
-    const text = await readFile(file, 'utf8').catch(() => '');
-    const match = text.match(/oauth_token:\s*(\S+)/);
+    const token = parseGhHostsToken(await readFile(file, 'utf8').catch(() => ''));
 
-    if (match) {
-      return { token: match[1], source: 'gh hosts.yml' };
+    if (token) {
+      return { token, source: 'gh hosts.yml' };
     }
   }
 
   return null;
+}
+
+// gh's hosts.yml holds one block per host, and only a github.com token can
+// reach the Copilot API — a GitHub Enterprise login listed first must not be
+// picked up. Newer gh versions nest the token under `users:`, so any indented
+// oauth_token inside the github.com block counts.
+export function parseGhHostsToken(text) {
+  let inGithub = false;
+
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const host = line.match(/^(\S[^:]*):\s*$/);
+
+    if (host) {
+      inGithub = host[1].trim() === 'github.com';
+      continue;
+    }
+
+    if (!inGithub) {
+      continue;
+    }
+
+    const token = line.match(/^\s+oauth_token:\s*["']?([^"'\s]+)["']?\s*$/);
+
+    if (token) {
+      return token[1];
+    }
+  }
+
+  return '';
 }
 
 export function buildCopilotItems(data, { prefix = 'copilot', now = Date.now() } = {}) {
@@ -115,7 +143,7 @@ export async function createCopilotProvider(env) {
     return null;
   }
 
-  return {
+  return createSingleAccountProvider({
     id: 'copilot',
     title: 'Copilot',
     refreshMs: readRefreshMs(env, ['COPILOT_REFRESH_SECONDS', 'COPILOT_REFRESH_SEC'], DEFAULT_REFRESH_MS),
@@ -139,40 +167,27 @@ export async function createCopilotProvider(env) {
           signal: AbortSignal.timeout(15000),
         });
       } catch (error) {
-        return { ok: false, status: 'ERR', error: `request failed: ${error.message}`, ms: Date.now() - startedAt, items: [] };
+        return errorSnapshot('ERR', `request failed: ${error.message}`, startedAt);
       }
 
       const text = await response.text();
-      const ms = Date.now() - startedAt;
 
       if (response.status === 401 || response.status === 403) {
-        return { ok: false, status: response.status, error: `GitHub token invalid (source: ${current.source}). Run \`gh auth login\` or refresh Copilot login.`, ms, items: [] };
+        return errorSnapshot(response.status, `GitHub token invalid (source: ${current.source}). Run \`gh auth login\` or refresh Copilot login.`, startedAt);
       }
 
       const data = parseJson(text);
 
       if (!response.ok || !data) {
-        return { ok: false, status: response.status, error: `HTTP ${response.status}`, body: text.slice(0, 300), ms, items: [] };
+        return errorSnapshot(response.status, `HTTP ${response.status}`, startedAt, { body: text.slice(0, 300) });
       }
 
       return {
         ok: true,
-        ms,
+        ms: Date.now() - startedAt,
         plan: data.copilot_plan || '',
         items: buildCopilotItems(data),
       };
     },
-
-    render(snapshot, width, mode = 'detail') {
-      return renderSingleAccount(snapshot, width, mode, 'copilot');
-    },
-
-    headerStatus(snapshot) {
-      return { ok: !!snapshot.ok, text: snapshot.ok ? 'OK' : String(snapshot.status || 'ERR') };
-    },
-
-    alertItems(snapshot) {
-      return (snapshot.items || []).map((item) => ({ key: item.key, label: item.label, percent: item.percent, resetAt: item.resetAt }));
-    },
-  };
+  });
 }
