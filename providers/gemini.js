@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
+import { googleCreditItems, readGoogleOverageSettings } from '../lib/google-billing.js';
 import { parseJson } from '../lib/http.js';
 import { writeFileAtomic } from '../lib/fsx.js';
 import { createLocalUsageScanner, jsonlRefresher } from '../lib/local-usage.js';
@@ -568,6 +569,8 @@ async function fetchGeminiQuota(dir, credsPath, readOnly = false) {
     }
 
     const items = buildGeminiItems(quotaData);
+    const overage = await readGoogleOverageSettings(join(dir, 'settings.json'));
+    items.push(...googleCreditItems(assistData, { prefix: 'gemini', strategy: overage }));
     const email = typeof idTokenPayload?.email === 'string' ? idTokenPayload.email : '';
 
     return {

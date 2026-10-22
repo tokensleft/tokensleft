@@ -48,6 +48,10 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 - Local usage for Claude Code, Codex, Gemini CLI, and Kimi Code is calculated from CLI logs on your machine and is never uploaded. The detail view shows input, cached input, output, and estimated API cost when pricing is available.
 - Unexpected reset history is stored locally in `~/.tokensleft/reset-history.json`; only provider/window names and detection times are recorded.
 - Claude Code shows saved limit resets from the usage API, including remaining count and expiry countdown. Missing or unsupported reset inventory is shown as unavailable, not zero. This only reads reset offers; use Claude to redeem them.
+- The dashboard warns once within 24 hours and again within one hour before a saved reset expires. These reminders run while TokensLeft is open and never redeem a reset.
+- OpenCode Go/Go Plus quotas use server-reported percentages and reset times; local message costs are shown only as local usage, not as subscription allowance. A missing quota response stays unavailable. `OPENCODE_GO_API_KEY` can supply a Go key without a local login.
+- Copilot distinguishes AI-credit billing from legacy request quotas, including fractional credits and overage permission when reported. Organization budgets not exposed to the member remain unavailable.
+- Gemini and Antigravity show Google AI-credit balances when supplied by the account API, and the user-level overage preference. Project or managed settings may override that preference. Antigravity also shows the reported plan: a free Starter quota is not a paid subscription or proof of access to paid models.
 - OAuth credentials may be refreshed and safely written back when needed. Use `--read-only` to disable refreshes and persistent credential updates.
 
 Local dollar totals are estimates based on public API prices, not subscription billing. Prices use an embedded LiteLLM/models.dev snapshot, refresh at most once per day, and fall back to the last known good copy when offline. Unknown or partial prices are marked instead of being treated as complete. Forecasts are simple linear projections, not guarantees.

@@ -2,13 +2,13 @@ import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readRefreshMs } from '../lib/env.js';
-import { buildUsageItem } from '../lib/forecast.js';
+import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { parseJson } from '../lib/http.js';
 import { aggregateUsageEvents } from '../lib/local-usage.js';
-import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
+import { createSingleAccountProvider } from '../lib/provider.js';
 
-// OpenCode's "Go" plan has no usage API; the CLI stores per-session cost in a
-// local SQLite DB, and the plan limits are fixed dollar amounts.
+// Kept for callers of the legacy local-estimate helper. Live provider quotas
+// come from the server; recorded API cost does not determine Go allowance.
 const PLAN_LIMITS_USD = { session: 12, weekly: 30, monthly: 60 };
 const SESSION_PERIOD_MS = 5 * 60 * 60 * 1000;
 const WEEK_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
@@ -96,36 +96,6 @@ function sessionResetAt(rows, nowMs) {
   return new Date((oldest === null ? nowMs : oldest) + SESSION_PERIOD_MS);
 }
 
-async function loadCostRows(dbPath) {
-  const { DatabaseSync } = await import('node:sqlite');
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-
-  try {
-    const messageSql = messageUsageSql(db);
-    if (messageSql) {
-      return db.prepare(`SELECT t AS createdMs, cost FROM (${messageSql}) WHERE providerID = 'opencode-go' AND cost > 0`).all()
-        .map((row) => ({ createdMs: Number(row.createdMs), cost: Number(row.cost) }))
-        .filter((row) => Number.isFinite(row.createdMs) && row.createdMs > 0 && Number.isFinite(row.cost));
-    }
-    const columns = db.prepare('PRAGMA table_info(session)').all().map((row) => row.name);
-    const modernSchema = columns.includes('cost') && columns.includes('model');
-    const sql = modernSchema
-      ? `SELECT time_updated AS createdMs, CAST(cost AS TEXT) AS cost
-         FROM session
-         WHERE json_valid(model) AND json_extract(model, '$.providerID') = 'opencode-go' AND cost > 0`
-      : `SELECT time_created AS createdMs, CAST(coalesce(json_extract(data, '$.cost'), 0) AS TEXT) AS cost
-         FROM message
-         WHERE json_valid(data) AND json_extract(data, '$.providerID') = 'opencode-go'
-           AND json_extract(data, '$.role') = 'assistant' AND coalesce(json_extract(data, '$.cost'), 0) > 0`;
-
-    return db.prepare(sql).all()
-      .map((row) => ({ createdMs: Number(row.createdMs), cost: Number(row.cost) }))
-      .filter((row) => Number.isFinite(row.createdMs) && row.createdMs > 0 && Number.isFinite(row.cost) && row.cost >= 0);
-  } finally {
-    db.close();
-  }
-}
-
 // OpenCode 2.x replaces message with session_message and moves the role into
 // a type column and the model into data.model. Prefer it when legacy tables
 // coexist after migration so the same usage is never counted twice.
@@ -210,12 +180,52 @@ export function hasOpencodeGoAuth(auth) {
   return typeof key === 'string' && key.trim().length > 0;
 }
 
+export function buildOpencodeQuotaItems(data, { prefix = 'opencode', now = Date.now() } = {}) {
+  const usage = data?.usage;
+  if (!usage || typeof usage !== 'object') return [];
+  return [
+    ['rolling', 'Session', SESSION_PERIOD_MS],
+    ['weekly', 'Weekly', WEEK_PERIOD_MS],
+    ['monthly', 'Monthly', null],
+  ].flatMap(([key, label, periodMs]) => {
+    const window = usage[key];
+    if (typeof window?.percent !== 'number' || !Number.isFinite(window.percent)
+      || window.percent < 0 || window.percent > 100) return [];
+    return [buildUsageItem({
+      key: `${prefix}:${key}`, label, percent: window.percent,
+      resetAt: toDate(window.resetsAt), periodMs, now,
+      severity: window.status && window.status !== 'ok' ? 'warning' : '',
+      details: window.status && window.status !== 'ok' ? [`Status: ${window.status}`] : [],
+    })];
+  });
+}
+
+async function fetchGoQuota(key) {
+  // The inference route replaced Zen in v2. Older deployments keep Zen.
+  for (const url of ['https://opencode.ai/inference/go/v1/usage', 'https://opencode.ai/zen/go/v1/usage']) {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json', 'User-Agent': 'tokensleft' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (response.status === 404) { await response.body?.cancel(); continue; }
+    if (!response.ok) return { items: [], error: `quota unavailable (HTTP ${response.status})` };
+    const data = parseJson(await response.text());
+    const items = buildOpencodeQuotaItems(data);
+    if (!items.some((item) => item.kind === 'usage')) return { items: [], error: 'quota response has no valid usage windows' };
+    items.push({ kind: 'info', key: 'opencode:overage', label: 'Extra usage', value: typeof data?.useBalance === 'boolean' ? data.useBalance ? 'enabled' : 'disabled' : 'unavailable' });
+    const plan = data?.plan === 'go-plus' ? 'Go Plus' : data?.plan === 'go' ? 'Go' : 'Go (tier unavailable)';
+    return { items, plan };
+  }
+  return { items: [], error: 'quota endpoint unavailable' };
+}
+
 export async function createOpencodeProvider(env) {
   const dataDir = opencodeDataDir(env);
   const authPath = join(dataDir, 'auth.json');
   const dbPath = join(dataDir, 'opencode.db');
   const auth = parseJson(await readFile(authPath, 'utf8').catch(() => ''));
-  const hasGoAuth = hasOpencodeGoAuth(auth);
+  const goKey = env.OPENCODE_GO_API_KEY?.trim() || (hasOpencodeGoAuth(auth) ? auth['opencode-go'].key.trim() : '');
+  const hasGoAuth = !!goKey;
   const hasDb = await access(dbPath).then(() => true, () => false);
 
   if (!hasGoAuth && !hasDb) {
@@ -231,12 +241,9 @@ export async function createOpencodeProvider(env) {
     async fetch() {
       const startedAt = Date.now();
 
-      if (!hasDb) {
-        return { ok: true, ms: Date.now() - startedAt, plan: 'Go', items: [{ kind: 'empty', key: 'opencode:none', label: 'Usage', message: 'no local usage history yet' }] };
-      }
-
-      const local = await loadLocalModels(dbPath, Date.now())
-        .catch((error) => ({ ok: false, error: `cannot read opencode.db: ${error.message}`, models: [] }));
+      const local = hasDb ? await loadLocalModels(dbPath, Date.now())
+        .catch((error) => ({ ok: false, error: `cannot read opencode.db: ${error.message}`, models: [] }))
+        : { ok: true, models: [] };
 
       // A database can exist for any OpenCode provider. Fixed Go plan limits
       // are meaningful only when opencode-go auth is present; DB-only installs
@@ -253,19 +260,15 @@ export async function createOpencodeProvider(env) {
         };
       }
 
-      let rows;
-
-      try {
-        rows = await loadCostRows(dbPath);
-      } catch (error) {
-        return errorSnapshot('DB', `cannot read opencode.db: ${error.message}`, startedAt, { local });
-      }
+      const currentAuth = parseJson(await readFile(authPath, 'utf8').catch(() => ''));
+      const currentKey = env.OPENCODE_GO_API_KEY?.trim() || (hasOpencodeGoAuth(currentAuth) ? currentAuth['opencode-go'].key.trim() : '') || goKey;
+      const quota = await fetchGoQuota(currentKey).catch(() => ({ items: [], error: 'quota request failed; check connection or Console' }));
 
       return {
         ok: true,
         ms: Date.now() - startedAt,
-        plan: 'Go',
-        items: buildOpencodeItems(rows),
+        plan: quota.plan || 'Go (tier unavailable)',
+        items: quota.items.length ? quota.items : [{ kind: 'empty', key: 'opencode:quota', label: 'Go quota', message: quota.error }],
         local,
       };
     },

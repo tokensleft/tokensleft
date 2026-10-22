@@ -1,12 +1,14 @@
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, platform, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { readOnlyMode, readRefreshMs } from '../lib/env.js';
 import { buildUsageItem, toDate } from '../lib/forecast.js';
 import { configPath, writeFileAtomic } from '../lib/fsx.js';
 import { parseJson } from '../lib/http.js';
 import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
 import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
+import { googleAccountStatus, googleCreditItems, readGoogleOverageSettings } from '../lib/google-billing.js';
 
 const CLOUD_CODE_URLS = [
   'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
@@ -189,17 +191,17 @@ async function readStateDbValue(dbPath) {
 
 const REFRESH_CACHE_PATH = configPath('antigravity-auth.json');
 
-async function loadCachedToken() {
+async function loadCachedToken(credentialHash) {
   const cached = parseJson(await readFile(REFRESH_CACHE_PATH, 'utf8').catch(() => ''));
 
-  if (cached?.accessToken && cached.expiresAtMs > Date.now()) {
+  if (cached?.credentialHash === credentialHash && cached?.accessToken && cached.expiresAtMs > Date.now()) {
     return cached.accessToken;
   }
 
   return null;
 }
 
-async function cacheToken(accessToken, expiresInSeconds) {
+async function cacheToken(accessToken, expiresInSeconds, credentialHash) {
   const dir = configPath();
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
@@ -209,13 +211,14 @@ async function cacheToken(accessToken, expiresInSeconds) {
 
   await writeFileAtomic(REFRESH_CACHE_PATH, JSON.stringify({
     accessToken,
+    credentialHash,
     expiresAtMs: Date.now() + (expiresInSeconds || 3600) * 1000,
   }), { mode: 0o600, preserveMode: false });
 }
 
 // The state DB is owned by Antigravity and its envelope is write-hostile, so
 // refreshed tokens are cached in ~/.tokensleft instead of being written back.
-async function refreshAccessToken(refreshToken) {
+async function refreshAccessToken(refreshToken, credentialHash) {
   const response = await postTokenRefresh(TOKEN_REFRESH_URL, {
     form: {
       client_id: OAUTH_CLIENT_ID,
@@ -240,7 +243,7 @@ async function refreshAccessToken(refreshToken) {
     return null;
   }
 
-  await cacheToken(body.access_token, body.expires_in);
+  await cacheToken(body.access_token, body.expires_in, credentialHash);
   return body.access_token;
 }
 
@@ -257,11 +260,11 @@ function poolLabel(displayName) {
     return 'Gemini Flash';
   }
 
-  // All non-Gemini models (Claude, GPT-OSS, ...) share one quota pool.
-  return 'Claude';
+  if (normalized.includes('claude')) return 'Claude';
+  return displayName;
 }
 
-export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date.now() } = {}) {
+export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date.now(), account = null } = {}) {
   const models = data?.models;
 
   if (!models || typeof models !== 'object') {
@@ -284,6 +287,10 @@ export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date
     if (!displayName) {
       continue;
     }
+    if (model.isAvailable === false || model.disabled === true) continue;
+    // A catalog entry with a default full quota is not proof that a free
+    // account can use paid third-party models.
+    if (account?.free && !displayName.toLowerCase().includes('gemini')) continue;
 
     const fraction = model.quotaInfo?.remainingFraction;
 
@@ -308,7 +315,7 @@ export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date
       label,
       percent: (1 - Math.max(0, Math.min(1, pool.fraction))) * 100,
       resetAt: toDate(pool.resetTime),
-      periodMs: QUOTA_PERIOD_MS,
+      periodMs: account ? null : QUOTA_PERIOD_MS,
       now,
     }));
 }
@@ -382,7 +389,8 @@ export async function createAntigravityProvider(env) {
         candidates.push(tokens.accessToken);
       }
 
-      const cached = await loadCachedToken();
+      const credentialHash = createHash('sha256').update(tokens.refreshToken || tokens.accessToken).digest('hex');
+      const cached = await loadCachedToken(credentialHash);
 
       if (cached && !candidates.includes(cached)) {
         candidates.push(cached);
@@ -394,12 +402,14 @@ export async function createAntigravityProvider(env) {
 
       try {
         let result = { data: null };
+        let activeToken = null;
         let sawAuthFailure = false;
 
         for (const candidate of candidates) {
           result = await fetchAvailableModels(candidate);
 
           if (result.data) {
+            activeToken = candidate;
             break;
           }
 
@@ -415,9 +425,10 @@ export async function createAntigravityProvider(env) {
         }
 
         if (!result.data && !readOnly && tokens.refreshToken && (sawAuthFailure || candidates.length === 0)) {
-          const refreshed = await refreshAccessToken(tokens.refreshToken);
+          const refreshed = await refreshAccessToken(tokens.refreshToken, credentialHash);
 
           if (refreshed) {
+            activeToken = refreshed;
             result = await fetchAvailableModels(refreshed);
           }
         }
@@ -428,13 +439,30 @@ export async function createAntigravityProvider(env) {
             : errorSnapshot('ERR', 'Cloud Code request failed. Try again later.', startedAt);
         }
 
-        const items = buildAntigravityItems(result.data);
+        let accountData = null;
+        try {
+          const response = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json', 'User-Agent': 'antigravity' },
+            body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (response.ok) accountData = parseJson(await response.text());
+        } catch { /* quota can still be reported when plan lookup is unavailable */ }
+        const account = googleAccountStatus(accountData);
+        if (account.blocked) return errorSnapshot('INELIGIBLE', `Antigravity access requires attention: ${account.reason}`, startedAt, { plan: account.plan });
+        const items = buildAntigravityItems(result.data, { account });
 
         if (items.length === 0) {
-          return errorSnapshot('ERR', 'no model quota data in response', startedAt);
+          return errorSnapshot('NOQUOTA', `No eligible model quota reported for ${account.plan}.`, startedAt, { plan: account.plan });
         }
 
-        return { ok: true, ms: Date.now() - startedAt, plan: '', items };
+        const settingsPath = env.ANTIGRAVITY_SETTINGS_PATH || join(dirname(dirname(dbPath)), 'settings.json');
+        const strategy = await readGoogleOverageSettings(settingsPath, { antigravity: true });
+        items.push(...googleCreditItems(accountData, { prefix: 'antigravity', strategy }));
+        if (!accountData) items.push({ kind: 'info', key: 'antigravity:access', label: 'Access', value: 'plan unavailable; model access not verified' });
+        if (account.free) items.push({ kind: 'info', key: 'antigravity:access', label: 'Access', value: 'Starter quota; paid model access not included' });
+        return { ok: true, ms: Date.now() - startedAt, plan: account.plan, items };
       } catch (error) {
         if (isReloginRequired(error)) {
           return errorSnapshot('EXPIRED', error.message, startedAt);

@@ -259,7 +259,7 @@ test('Gemini resolves tier, project, and quota buckets from the Cloud Code endpo
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.plan, 'Workspace');
   assert.equal(snapshot.email, 'dev@example.com');
-  assert.deepEqual(snapshot.items.map((item) => [item.label, item.percent]), [['Pro', 75], ['Flash', 0]]);
+  assert.deepEqual(snapshot.items.filter((item) => item.kind === 'usage').map((item) => [item.label, item.percent]), [['Pro', 75], ['Flash', 0]]);
   assert.ok(calls.every((call) => call.options.headers.Authorization === 'Bearer live-token'));
   assert.ok(!calls.some((call) => call.url.includes('cloudresourcemanager')), 'the assist project skips project discovery');
   const quotaCall = calls.find((call) => call.url.includes(':retrieveUserQuota'));

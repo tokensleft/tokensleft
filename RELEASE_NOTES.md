@@ -1,4 +1,5 @@
-<!-- release: v0.9.1 -->
+<!-- release: v0.9.2 -->
 
-- Added Claude Code saved resets with expiry countdowns.
-- Fixed OpenCode usage tracking on newer versions.
+- Added Copilot AI credits and Google credit balances.
+- Improved OpenCode quota accuracy and Antigravity plan detection.
+- Added expiry reminders for saved resets.

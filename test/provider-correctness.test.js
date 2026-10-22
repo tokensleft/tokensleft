@@ -184,18 +184,26 @@ test('OpenCode Go auth requires a non-empty opencode-go key', () => {
   assert.equal(hasOpencodeGoAuth({}), false);
 });
 
-sqliteTest('OpenCode shows fixed Go quotas with an opencode-go key', async (t) => {
+sqliteTest('OpenCode uses server Go quotas rather than estimating quota from recorded costs', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'tokensleft-opencode-go-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   createOpencodeDb(join(dir, 'opencode.db'), { providerID: 'opencode-go', cost: 6 });
   await writeFile(join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { key: 'go-key' } }));
 
   const provider = await createOpencodeProvider({ OPENCODE_DATA_DIR: dir });
-  const snapshot = await provider.fetch();
+  let snapshot;
+  await withMockFetch((url) => {
+    assert.equal(String(url), 'https://opencode.ai/inference/go/v1/usage');
+    return jsonResponse({ plan: 'go-plus', usage: {
+      rolling: { percent: 12, resetsAt: new Date(Date.now() + 3600_000).toISOString() },
+      weekly: { percent: 20 }, monthly: { percent: 30 },
+    } });
+  }, async () => { snapshot = await provider.fetch(); });
 
   assert.equal(snapshot.ok, true);
-  assert.equal(snapshot.plan, 'Go');
-  assert.deepEqual(snapshot.items.map((item) => item.label), ['Session', 'Weekly', 'Monthly']);
+  assert.equal(snapshot.plan, 'Go Plus');
+  assert.deepEqual(snapshot.items.filter((item) => item.kind === 'usage').map((item) => item.label), ['Session', 'Weekly', 'Monthly']);
+  assert.equal(snapshot.items[0].percent, 12);
   assert.equal(snapshot.local.ok, true);
 });
 
@@ -236,8 +244,9 @@ sqliteTest('OpenCode v2 reads session_message usage and Go costs without the leg
   createOpencodeDb(dbPath, { providerID: 'opencode-go', cost: 6 });
   await writeFile(join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { key: 'go-key' } }));
   const goProvider = await createOpencodeProvider({ OPENCODE_DATA_DIR: dir });
-  snapshot = await goProvider.fetch();
+  await withMockFetch(() => jsonResponse({}, 404), async () => { snapshot = await goProvider.fetch(); });
   assert.equal(snapshot.ok, true);
-  assert.match(snapshot.items[0].value, /\$7\.00\/\$12/);
+  assert.equal(snapshot.items[0].kind, 'empty');
+  assert.match(snapshot.items[0].message, /unavailable/);
   assert.equal(snapshot.local.models[0].today.cost, 7);
 });

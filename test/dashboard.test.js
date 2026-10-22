@@ -298,6 +298,31 @@ test('crossing an alert threshold shows a footer warning and rings the bell', as
   assert.match(fake.dashboard.plain(), /alpha-compact 85%/);
 });
 
+test('saved-reset expiry alerts reach the footer once at 24h and again at 1h', async (t) => {
+  const realNow = Date.now;
+  let now = Date.parse('2026-10-22T00:00:00Z');
+  const deadline = new Date(now + 12 * 3600_000);
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; });
+  const provider = fakeProvider('alpha', 'Alpha');
+  const fetchUsage = provider.fetch;
+  provider.fetch = async () => {
+    const snapshot = await fetchUsage();
+    snapshot.items.push({ kind: 'info', key: 'alpha:resets', label: 'Saved resets', value: '1 available', expiresAt: deadline });
+    return snapshot;
+  };
+  const { fake, handle } = startDashboard(t, { providers: [provider] });
+  await handle.ready;
+  assert.match(fake.footer.plain(), /Saved resets expires within 24h/);
+  assert.equal(fake.screen.program.bells, 1);
+  await handle.refresh();
+  assert.equal(fake.screen.program.bells, 1);
+  now += 11.5 * 3600_000;
+  await handle.refresh();
+  assert.match(fake.footer.plain(), /Saved resets expires within 1h/);
+  assert.equal(fake.screen.program.bells, 2);
+});
+
 test('an unexpected quota reset is saved, celebrated, dismissed by a key, and replayable with t', async (t) => {
   const resetAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
   const alpha = fakeProvider('alpha', 'Alpha', { percent: 90, resetAt });

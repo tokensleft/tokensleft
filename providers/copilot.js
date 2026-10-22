@@ -89,8 +89,37 @@ export function parseGhHostsToken(text) {
 
 export function buildCopilotItems(data, { prefix = 'copilot', now = Date.now() } = {}) {
   const items = [];
-  const resetAt = toDate(data?.quota_reset_date);
+  const resetAt = toDate(data?.quota_reset_date_utc ?? data?.quota_reset_date);
   const snapshots = data?.quota_snapshots;
+  const premium = snapshots?.premium_interactions;
+  const creditBilling = data?.token_based_billing === true || premium?.token_based_billing === true;
+  const numeric = (value) => typeof value === 'number' && Number.isFinite(value);
+  if (creditBilling) {
+    const total = premium?.entitlement;
+    const remaining = numeric(premium?.quota_remaining) ? premium.quota_remaining : premium?.remaining;
+    // quota_remaining retains fractions that the legacy credits_used and
+    // remaining counters may round away.
+    const used = numeric(total) && numeric(remaining) ? Math.max(0, total - remaining)
+      : numeric(premium?.credits_used) ? premium.credits_used : null;
+    if (numeric(total) && total > 0 && numeric(used) && premium.unlimited !== true) {
+      const format = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+      items.push(buildUsageItem({
+        key: `${prefix}:ai-credits`, label: 'AI credits',
+        value: `${format(used)} / ${format(total)} used`, percent: used / total * 100,
+        resetAt, periodMs: MONTH_PERIOD_MS, now,
+        severity: premium.has_quota === false ? 'critical' : '',
+        details: premium.has_quota === false ? ['Credit access blocked by GitHub; check your budget or account policy'] : [],
+      }));
+    } else {
+      items.push({ kind: 'info', key: `${prefix}:ai-credits`, label: 'AI credits', value: 'usage unavailable for this account' });
+    }
+    if (typeof premium?.overage_permitted === 'boolean') {
+      items.push({ kind: 'info', key: `${prefix}:overage`, label: 'Overage', value: premium.overage_permitted ? 'allowed by budget' : 'not permitted' });
+    }
+    if (numeric(premium?.overage_count) && premium.overage_count > 0) {
+      items.push({ kind: 'info', key: `${prefix}:extra-credits`, label: 'Extra credits', value: `${premium.overage_count} used beyond included allowance` });
+    }
+  }
 
   const pushSnapshot = (label, key, snapshot) => {
     if (!snapshot || snapshot.unlimited === true || typeof snapshot.percent_remaining !== 'number') {
@@ -107,7 +136,7 @@ export function buildCopilotItems(data, { prefix = 'copilot', now = Date.now() }
     }));
   };
 
-  pushSnapshot('Premium', 'premium', snapshots?.premium_interactions);
+  if (!creditBilling) pushSnapshot('Premium', 'premium', snapshots?.premium_interactions);
   pushSnapshot('Chat', 'chat', snapshots?.chat);
 
   // Free tier reports remaining counts instead of percent snapshots.
