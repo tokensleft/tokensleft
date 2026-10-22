@@ -17,6 +17,10 @@ import { errorSnapshot, multiAccountHeaderStatus, usageAlertItems } from '../lib
 import { formatUsageItem, formatUsageItemCompact } from '../lib/render.js';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+// Reset inventory is gated on the Claude Code client identity, as well as
+// the optional cedar_ember query. Keep spend in the ordinary usage response.
+const RESET_USAGE_URL = `${USAGE_URL}?cedar_ember=1`;
+const CLAUDE_USAGE_USER_AGENT = 'claude-cli/2.1.288 (external, cli)';
 // Claude Code's public OAuth client — same values every install ships with;
 // used only to redeem the refresh_token already on disk.
 const TOKEN_REFRESH_URL = 'https://platform.claude.com/v1/oauth/token';
@@ -443,6 +447,56 @@ export function tokenNeedsRefresh(expiresAt, now = Date.now()) {
   return Number.isFinite(expiresAt) && now + TOKEN_REFRESH_BUFFER_MS >= expiresAt;
 }
 
+// Preserve grants so remembered snapshots can drop expired credits on each
+// render, without waiting for another network poll. Never expose grant IDs.
+export function parseClaudeResetCredits(block) {
+  if (block?.eligible !== true || !Array.isArray(block.grants)) {
+    return null;
+  }
+  const grants = [];
+  for (const grant of block.grants) {
+    const startsAt = grant?.starts_at == null ? null : toDate(grant.starts_at);
+    const endsAt = grant?.ends_at == null ? null : toDate(grant.ends_at);
+    if (!Number.isSafeInteger(grant?.resets_left) || grant.resets_left < 0
+      || typeof grant.paused !== 'boolean'
+      || (grant.starts_at != null && !startsAt)
+      || (grant.ends_at != null && !endsAt)) {
+      return null;
+    }
+    grants.push({
+      remaining: grant.resets_left,
+      paused: grant.paused,
+      startsAt,
+      endsAt,
+      full: Array.isArray(grant.clears)
+        && grant.clears.includes('five_hour') && grant.clears.includes('seven_day'),
+    });
+  }
+  return { grants };
+}
+
+function renderClaudeResetCredits(credits, width, compact, now = Date.now()) {
+  if (!credits) {
+    return [truncateTagged(`  {${COLOR.muted}-fg}Saved resets: unavailable{/${COLOR.muted}-fg}`, width)];
+  }
+  const grants = credits.grants.filter((grant) => grant.remaining > 0 && !grant.paused
+    && (!grant.startsAt || new Date(grant.startsAt).getTime() <= now)
+    && (!grant.endsAt || new Date(grant.endsAt).getTime() > now));
+  const count = grants.reduce((total, grant) => total + grant.remaining, 0);
+  const lines = [`  {${COLOR.accentSoft}-fg}Saved resets: ${count} available{/${COLOR.accentSoft}-fg}`];
+  for (const grant of grants) {
+    const label = grant.full ? 'Full reset' : 'Limit reset';
+    const expiry = grant.endsAt
+      ? `expires ${formatCountdown(new Date(grant.endsAt))}`
+      : 'no expiry';
+    lines.push(truncateTagged(`  ${label} ×${grant.remaining} · ${expiry}`, width));
+    if (!compact && grant.endsAt) {
+      lines.push(truncateTagged(`  {${COLOR.muted}-fg}Expires at ${escapeBlessed(formatDateTime(new Date(grant.endsAt)))}{/${COLOR.muted}-fg}`, width));
+    }
+  }
+  return lines;
+}
+
 export function buildClaudeLimitItems(data, { prefix = 'claude', now = Date.now() } = {}) {
   const items = [];
   const limits = Array.isArray(data?.limits) ? data.limits : [];
@@ -570,14 +624,25 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
     };
   }
 
-  const requestUsage = (bearer) => fetch(USAGE_URL, {
-    headers: {
-      Authorization: `Bearer ${bearer}`,
-      'anthropic-beta': 'oauth-2025-04-20',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(15000),
-  });
+  const requestUsage = async (bearer, withResets = true) => {
+    const response = await fetch(withResets ? RESET_USAGE_URL : USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${bearer}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        Accept: 'application/json',
+        ...(withResets ? { 'User-Agent': CLAUDE_USAGE_USER_AGENT } : {}),
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    // Optional inventory must not break ordinary quota reporting on servers
+    // that reject this query or client identity. Authentication still follows
+    // the existing refresh path if the plain request is rejected too.
+    if (withResets && (response.status === 400 || response.status === 403)) {
+      await response.body?.cancel();
+      return requestUsage(bearer, false);
+    }
+    return response;
+  };
 
   let response;
 
@@ -637,6 +702,7 @@ async function fetchAccountUsage(account, seenTokens, readOnly = false) {
     ms,
     items: buildClaudeLimitItems(data, { prefix: account.name }),
     spend: formatSpend(data.spend),
+    resetCredits: parseClaudeResetCredits(data.cedar_ember),
     // A refresh that worked but could not be saved still produced usable bars —
     // the warning rides along so the next run's failure is not a surprise.
     warning: credentials.warnings?.join(' · ') || '',
@@ -779,6 +845,7 @@ function renderAccountBlock(result, width, mode = 'detail') {
 
   const itemFormatter = compact ? formatUsageItemCompact : formatUsageItem;
   lines.push(...result.items.map((item) => itemFormatter(item, width)));
+  lines.push(...renderClaudeResetCredits(result.resetCredits, width, compact));
 
   if (result.spend && !compact) {
     lines.push(`  {bold}${'Spend'.padEnd(12)}{/bold} ${escapeBlessed(result.spend)}`);

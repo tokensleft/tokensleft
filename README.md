@@ -47,6 +47,7 @@ Choose any combination, for example `tokensleft claude codex`. With no provider 
 - Codex's unofficial 48-hour reset chance is fetched anonymously from `willcodexquotareset.com`; no credential or account identifier is included.
 - Local usage for Claude Code, Codex, Gemini CLI, and Kimi Code is calculated from CLI logs on your machine and is never uploaded. The detail view shows input, cached input, output, and estimated API cost when pricing is available.
 - Unexpected reset history is stored locally in `~/.tokensleft/reset-history.json`; only provider/window names and detection times are recorded.
+- Claude Code shows saved limit resets from the usage API, including remaining count and expiry countdown. Missing or unsupported reset inventory is shown as unavailable, not zero. This only reads reset offers; use Claude to redeem them.
 - OAuth credentials may be refreshed and safely written back when needed. Use `--read-only` to disable refreshes and persistent credential updates.
 
 Local dollar totals are estimates based on public API prices, not subscription billing. Prices use an embedded LiteLLM/models.dev snapshot, refresh at most once per day, and fall back to the last known good copy when offline. Unknown or partial prices are marked instead of being treated as complete. Forecasts are simple linear projections, not guarantees.

@@ -198,3 +198,46 @@ sqliteTest('OpenCode shows fixed Go quotas with an opencode-go key', async (t) =
   assert.deepEqual(snapshot.items.map((item) => item.label), ['Session', 'Weekly', 'Monthly']);
   assert.equal(snapshot.local.ok, true);
 });
+
+sqliteTest('OpenCode v2 reads session_message usage and Go costs without the legacy message table', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'tokensleft-opencode-v2-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'opencode.db');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('CREATE TABLE session_message (type TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL)');
+    const insert = db.prepare('INSERT INTO session_message VALUES (?, ?, ?)');
+    const usage = {
+      model: { providerID: 'opencode-go', id: 'test-model' }, cost: 6,
+      tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 10, write: 2 } },
+    };
+    insert.run('assistant', Date.now() - 1000, JSON.stringify(usage));
+    insert.run('compaction', Date.now() - 500, JSON.stringify({ ...usage, cost: 1 }));
+    insert.run('user', Date.now(), JSON.stringify(usage));
+    insert.run('compaction', Date.now(), JSON.stringify({ status: 'running' }));
+    insert.run('assistant', Date.now(), 'malformed');
+  } finally {
+    db.close();
+  }
+  const provider = await createOpencodeProvider({ OPENCODE_DATA_DIR: dir });
+  let snapshot = await provider.fetch();
+  assert.equal(snapshot.ok, true);
+  assert.deepEqual(snapshot.items, []);
+  assert.equal(snapshot.local.models.length, 1);
+  const today = snapshot.local.models[0].today;
+  assert.equal(today.input, 200);
+  assert.equal(today.output, 50);
+  assert.equal(today.cacheRead, 20);
+  assert.equal(today.cacheWrite, 4);
+  assert.equal(today.cost, 7);
+  assert.equal(today.messages, 2);
+
+  // Leftover migrated tables must not add the same usage a second time.
+  createOpencodeDb(dbPath, { providerID: 'opencode-go', cost: 6 });
+  await writeFile(join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { key: 'go-key' } }));
+  const goProvider = await createOpencodeProvider({ OPENCODE_DATA_DIR: dir });
+  snapshot = await goProvider.fetch();
+  assert.equal(snapshot.ok, true);
+  assert.match(snapshot.items[0].value, /\$7\.00\/\$12/);
+  assert.equal(snapshot.local.models[0].today.cost, 7);
+});

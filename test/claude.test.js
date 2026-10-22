@@ -13,12 +13,105 @@ import {
   keychainServiceCandidates,
   keychainWriteArgs,
   parseKeychainCredentials,
+  parseClaudeResetCredits,
   parseTranscriptChunk,
   readClaudeAccounts,
   renderClaudeSnapshot,
   resolveRetryAfterAt,
 } from '../providers/claude.js';
 import { stripBlessedTags } from '../lib/format.js';
+import { formatPlainProviderBlock } from '../lib/cli.js';
+
+test('saved Claude resets show remaining credits and expiry, independently of local history', () => {
+  const now = Date.parse('2026-10-22T08:00:00Z');
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const grant = {
+      id: 'secret-grant', resets_left: 2, paused: false, usable_now: false,
+      starts_at: '2026-09-22T16:00:00Z', ends_at: '2026-10-22T16:00:00Z',
+      clears: ['five_hour', 'seven_day'],
+    };
+    const credits = parseClaudeResetCredits({ eligible: true, grants: [
+      grant,
+      { ...grant, resets_left: 0 },
+      { ...grant, paused: true },
+      { ...grant, ends_at: '2026-10-22T07:00:00Z' },
+      { ...grant, starts_at: '2026-10-23T00:00:00Z' },
+    ] });
+    assert.doesNotMatch(JSON.stringify(credits), /secret-grant/);
+    const snapshot = {
+      results: [{ name: 'system', ok: true, ms: 1, items: [], resetCredits: credits }],
+      local: { ok: true, models: [] },
+    };
+    for (const mode of ['compact', 'detail']) {
+      const output = stripBlessedTags(renderClaudeSnapshot(snapshot, 74, mode));
+      assert.match(output, /Saved resets: 2 available/);
+      assert.match(output, /Full reset ×2 · expires in 8h/);
+      assert.equal(output.includes('Expires at'), mode === 'detail');
+      assert.doesNotMatch(output, /local history/);
+    }
+    assert.match(formatPlainProviderBlock({ render: renderClaudeSnapshot }, snapshot, 74), /Full reset ×2/);
+    Date.now = () => Date.parse('2026-10-24T00:00:00Z');
+    const expired = stripBlessedTags(renderClaudeSnapshot(JSON.parse(JSON.stringify(snapshot)), 74, 'compact'));
+    assert.match(expired, /Saved resets: 0 available/);
+    assert.doesNotMatch(expired, /Full reset/);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('missing, ineligible and malformed reset inventories remain unknown rather than zero', () => {
+  for (const block of [undefined, null, { eligible: false, grants: [] }, { eligible: true },
+    { eligible: true, grants: [null] },
+    { eligible: true, grants: [{ resets_left: '1', paused: false }] },
+    { eligible: true, grants: [{ resets_left: 1, paused: false, ends_at: 'invalid' }] },
+  ]) {
+    assert.equal(parseClaudeResetCredits(block), null);
+  }
+  assert.deepEqual(parseClaudeResetCredits({ eligible: true, grants: [] }), { grants: [] });
+  const output = stripBlessedTags(renderClaudeSnapshot({ results: [{ name: 'system', ok: true, items: [] }] }, 74, 'compact'));
+  assert.match(output, /Saved resets: unavailable/);
+  assert.doesNotMatch(output, /0 available/);
+});
+
+test('Claude fetch requests saved reset inventory with the compatible client identity', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-reset-credits-');
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1');
+    assert.match(options.headers['User-Agent'], /^claude-cli\/2\.1\.288 \(external, cli\)$/);
+    return new Response(JSON.stringify({ ...SAMPLE_USAGE, cedar_ember: { eligible: true, grants: [
+      { resets_left: 1, paused: false, ends_at: '2099-10-23T00:00:00Z', clears: ['five_hour', 'seven_day'] },
+    ] } }));
+  };
+  const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_OAUTH_TOKEN: 'test-token' });
+  const snapshot = await provider.fetch();
+  assert.equal(snapshot.results[0].ok, true);
+  assert.equal(snapshot.results[0].resetCredits.grants[0].remaining, 1);
+  assert.match(stripBlessedTags(provider.render(snapshot, 74, 'compact')), /Full reset ×1/);
+});
+
+test('unsupported optional reset query falls back to ordinary usage; 429 is never retried', async (t) => {
+  const configDir = await emptyConfigDir(t, 'tokensleft-reset-fallback-');
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  for (const status of [400, 403, 429]) {
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+      requests.push(String(url));
+      if (String(url).includes('?')) return new Response('{}', { status });
+      assert.equal(options.headers['User-Agent'], undefined);
+      return new Response(JSON.stringify(SAMPLE_USAGE));
+    };
+    const provider = await createClaudeProvider({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_OAUTH_TOKEN: 'test-token' });
+    const snapshot = await provider.fetch();
+    assert.equal(requests.length, status === 429 ? 1 : 2);
+    assert.equal(snapshot.results[0].ok, status !== 429);
+    if (status !== 429) assert.equal(snapshot.results[0].resetCredits, null);
+  }
+});
 
 const SAMPLE_USAGE = {
   five_hour: { utilization: 3, resets_at: '2026-07-03T12:10:00Z' },
@@ -364,7 +457,7 @@ test('Keychain credentials authenticate the usage request', async (t) => {
   assert.equal(snapshot.results[0].plan, 'max / max_20x');
   assert.equal(snapshot.results[0].items.length, 3);
   assert.deepEqual(requests, [{
-    url: 'https://api.anthropic.com/api/oauth/usage',
+    url: 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1',
     authorization: 'Bearer keychain-access-token',
   }]);
 });

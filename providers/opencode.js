@@ -101,6 +101,12 @@ async function loadCostRows(dbPath) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
 
   try {
+    const messageSql = messageUsageSql(db);
+    if (messageSql) {
+      return db.prepare(`SELECT t AS createdMs, cost FROM (${messageSql}) WHERE providerID = 'opencode-go' AND cost > 0`).all()
+        .map((row) => ({ createdMs: Number(row.createdMs), cost: Number(row.cost) }))
+        .filter((row) => Number.isFinite(row.createdMs) && row.createdMs > 0 && Number.isFinite(row.cost));
+    }
     const columns = db.prepare('PRAGMA table_info(session)').all().map((row) => row.name);
     const modernSchema = columns.includes('cost') && columns.includes('model');
     const sql = modernSchema
@@ -120,6 +126,29 @@ async function loadCostRows(dbPath) {
   }
 }
 
+// OpenCode 2.x replaces message with session_message and moves the role into
+// a type column and the model into data.model. Prefer it when legacy tables
+// coexist after migration so the same usage is never counted twice.
+function messageUsageSql(db) {
+  const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all().map((row) => row.name));
+  const v2 = tables.has('session_message');
+  if (!v2 && !tables.has('message')) {
+    return null;
+  }
+  return `SELECT time_created AS t,
+              json_extract(data, '${v2 ? '$.model.providerID' : '$.providerID'}') AS providerID,
+              json_extract(data, '${v2 ? '$.model.id' : '$.modelID'}') AS modelID,
+              coalesce(json_extract(data, '$.tokens.input'), 0) AS input,
+              coalesce(json_extract(data, '$.tokens.output'), 0) + coalesce(json_extract(data, '$.tokens.reasoning'), 0) AS output,
+              coalesce(json_extract(data, '$.tokens.cache.read'), 0) AS cacheRead,
+              coalesce(json_extract(data, '$.tokens.cache.write'), 0) AS cacheWrite,
+              json_extract(data, '$.cost') AS cost
+       FROM ${v2 ? 'session_message' : 'message'}
+       WHERE json_valid(data) AND ${v2
+    ? "(type = 'assistant' OR (type = 'compaction' AND json_type(data, '$.tokens') = 'object'))"
+    : "json_extract(data, '$.role') = 'assistant'"}`;
+}
+
 // Per-model local usage from assistant messages, mirroring `opencode stats`:
 // reasoning tokens fold into output, `tokens.input` already excludes cache
 // reads/writes, and cost is what OpenCode itself recorded per message.
@@ -128,18 +157,11 @@ export async function loadLocalModels(dbPath, now) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
 
   try {
-    const rows = db.prepare(
-      `SELECT time_created AS t,
-              json_extract(data, '$.providerID') AS providerID,
-              json_extract(data, '$.modelID') AS modelID,
-              coalesce(json_extract(data, '$.tokens.input'), 0) AS input,
-              coalesce(json_extract(data, '$.tokens.output'), 0) + coalesce(json_extract(data, '$.tokens.reasoning'), 0) AS output,
-              coalesce(json_extract(data, '$.tokens.cache.read'), 0) AS cacheRead,
-              coalesce(json_extract(data, '$.tokens.cache.write'), 0) AS cacheWrite,
-              json_extract(data, '$.cost') AS cost
-       FROM message
-       WHERE json_valid(data) AND json_extract(data, '$.role') = 'assistant'`,
-    ).all();
+    const sql = messageUsageSql(db);
+    if (!sql) {
+      throw new Error('unsupported OpenCode database schema (no message or session_message table)');
+    }
+    const rows = db.prepare(sql).all();
 
     const events = rows.map((row) => ({
       t: Number(row.t),
