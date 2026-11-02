@@ -7,6 +7,7 @@ import {
   buildClaudeLimitItems,
   createClaudeProvider,
   createTranscriptScanner,
+  formatClaudePlan,
   isZaiModel,
   keychainCredentials,
   keychainLookups,
@@ -138,6 +139,46 @@ test('buildClaudeLimitItems maps limits[] including model-scoped (Fable)', () =>
 test('buildClaudeLimitItems falls back to five_hour/seven_day', () => {
   const items = buildClaudeLimitItems({ five_hour: SAMPLE_USAGE.five_hour, seven_day: SAMPLE_USAGE.seven_day }, { prefix: 'sys' });
   assert.deepEqual(items.map((item) => item.label), ['Session', 'Weekly all']);
+});
+
+test('current Claude plans recognize migrated tiers and preserve unknown plans', () => {
+  for (const tier of ['default_max_20x', 'default_claude_max_20x']) {
+    assert.equal(formatClaudePlan({ subscriptionType: 'max', rateLimitTier: tier }), 'Ultra');
+  }
+  assert.equal(formatClaudePlan({ subscriptionType: 'ultra', rateLimitTier: 'default_max_20x' }), 'Ultra');
+  assert.equal(formatClaudePlan({ subscriptionType: 'ultra' }), 'Ultra');
+  assert.equal(formatClaudePlan({ subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' }), 'Max');
+  assert.equal(formatClaudePlan({ subscriptionType: 'max', rateLimitTier: 'default_max_5x' }), 'Max');
+  assert.equal(formatClaudePlan({ subscriptionType: 'pro' }), 'pro');
+  assert.equal(formatClaudePlan({ subscriptionType: 'enterprise', rateLimitTier: 'custom' }), 'enterprise / custom');
+  assert.equal(formatClaudePlan({ subscriptionType: 'max', rateLimitTier: 'future_tier' }), 'max / future_tier');
+  assert.equal(formatClaudePlan(), '');
+});
+
+test('weekly-only Ultra limits remain authoritative over legacy session fields', () => {
+  const now = Date.parse('2026-11-02T08:00:00Z');
+  const data = { ...SAMPLE_USAGE, limits: SAMPLE_USAGE.limits.slice(1) };
+  const items = buildClaudeLimitItems(data, { prefix: 'ultra', now });
+  assert.deepEqual(items.map((item) => item.label), ['Weekly all', 'Wk Fable']);
+  assert.equal(items[0].percent, 17);
+  assert.equal(items[1].percent, 33);
+  assert.equal(items[0].resetAt.getTime(), Date.parse(SAMPLE_USAGE.seven_day.resets_at));
+  const output = stripBlessedTags(renderClaudeSnapshot({ results: [
+    { name: 'system', plan: 'Ultra', ok: true, items },
+  ] }, 74, 'compact'));
+  assert.match(output, /Ultra/);
+  assert.doesNotMatch(output, /Session/);
+  // Unverified Ultra accounts can still have a temporary session limit.
+  assert.equal(buildClaudeLimitItems(SAMPLE_USAGE)[0].label, 'Session');
+});
+
+test('legacy weekly-only responses and usage credits do not invent a session quota', () => {
+  const items = buildClaudeLimitItems({
+    five_hour: null,
+    seven_day: SAMPLE_USAGE.seven_day,
+    extra_usage: { is_enabled: true, utilization: 42 },
+  });
+  assert.deepEqual(items.map((item) => [item.label, item.percent]), [['Weekly all', 17], ['Usage credits', 42]]);
 });
 
 test('429 retry time honors the server delay with a ten-minute minimum backoff', () => {
@@ -454,7 +495,7 @@ test('Keychain credentials authenticate the usage request', async (t) => {
   const snapshot = await provider.fetch();
 
   assert.equal(snapshot.results[0].ok, true);
-  assert.equal(snapshot.results[0].plan, 'max / max_20x');
+  assert.equal(snapshot.results[0].plan, 'Ultra');
   assert.equal(snapshot.results[0].items.length, 3);
   assert.deepEqual(requests, [{
     url: 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1',

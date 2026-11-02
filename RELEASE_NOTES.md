@@ -1,5 +1,5 @@
-<!-- release: v0.9.2 -->
+<!-- release: v0.9.3 -->
 
-- Added Copilot AI credits and Google credit balances.
-- Improved OpenCode quota accuracy and Antigravity plan detection.
-- Added expiry reminders for saved resets.
+- Updated Claude plan names, including Ultra for former Max 20x accounts.
+- Updated the demo for Ultra's weekly limits.
+- Renamed Extra usage to Usage credits.

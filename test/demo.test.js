@@ -70,8 +70,8 @@ test('demo fixtures follow current live provider shapes', async () => {
 
   const claude = snapshots.claude;
   assert.equal(claude.results[0].name, 'system');
-  assert.equal(claude.results[0].plan, 'max / claude_max_20x');
-  assert.deepEqual(claude.results[0].items.map((item) => item.label), ['Session', 'Weekly all', 'Wk Fable']);
+  assert.equal(claude.results[0].plan, 'Ultra');
+  assert.deepEqual(claude.results[0].items.map((item) => item.label), ['Weekly all', 'Wk Fable']);
   assert.deepEqual(claude.local.models.map((entry) => entry.model), [
     'claude-sonnet-5',
     'claude-fable-5',

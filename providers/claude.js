@@ -321,6 +321,20 @@ function isExpired(oauth, now) {
   return Number.isFinite(oauth.expiresAt) && oauth.expiresAt < now;
 }
 
+// Max 20x subscribers migrate to Ultra automatically. Credentials can retain
+// the old tier name; this is a display alias, never a signal to hide limits.
+export function formatClaudePlan(oauth = {}) {
+  const subscription = oauth.subscriptionType || '';
+  const tier = (oauth.rateLimitTier || '').replace(/^default_/, '');
+  if (subscription === 'ultra' || (subscription === 'max' && /^(claude_)?max_20x$/.test(tier))) {
+    return 'Ultra';
+  }
+  if (subscription === 'max' && (!tier || /^(claude_)?max_5x$/.test(tier))) {
+    return 'Max';
+  }
+  return [subscription, tier].filter(Boolean).join(' / ');
+}
+
 async function resolveCredentials(account, readOnly = false, now = Date.now()) {
   if (account.source === 'manual') {
     return { token: account.token, plan: '', expiresAt: null, refresh: null, readOnly, storage: 'env' };
@@ -361,7 +375,7 @@ async function resolveCredentials(account, readOnly = false, now = Date.now()) {
 
   return {
     token: oauth.accessToken,
-    plan: [oauth.subscriptionType, (oauth.rateLimitTier || '').replace(/^default_/, '')].filter(Boolean).join(' / '),
+    plan: formatClaudePlan(oauth),
     expiresAt: Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
     refresh: oauth.refreshToken && !readOnly
       ? () => refreshOAuthToken(persist, credentialState)
@@ -552,7 +566,7 @@ export function buildClaudeLimitItems(data, { prefix = 'claude', now = Date.now(
   if (data?.extra_usage?.is_enabled) {
     items.push(buildUsageItem({
       key: `${prefix}:extra`,
-      label: 'Extra usage',
+      label: 'Usage credits',
       percent: Number.isFinite(data.extra_usage.utilization) ? data.extra_usage.utilization : 0,
       periodMs: MONTHLY_PERIOD_MS,
       now,
