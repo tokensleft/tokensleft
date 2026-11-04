@@ -26,14 +26,14 @@ test('PROVIDERS registry lists all nine providers in dashboard order', () => {
 
   assert.deepEqual(
     PROVIDERS.filter((entry) => entry.requiresNodeSqlite).map((entry) => entry.id),
-    ['antigravity', 'opencode'],
+    ['opencode'],
   );
 });
 
 test('resolveProviderSupport skips only SQLite-backed providers when node:sqlite is unavailable', async () => {
   const unavailable = await resolveProviderSupport(PROVIDERS, async () => null);
-  assert.deepEqual(unavailable.supported.map((entry) => entry.id), ['claude', 'codex', 'gemini', 'kimi', 'copilot', 'grok', 'zai']);
-  assert.deepEqual(unavailable.skipped.map((entry) => entry.id), ['antigravity', 'opencode']);
+  assert.deepEqual(unavailable.supported.map((entry) => entry.id), ['claude', 'codex', 'gemini', 'kimi', 'copilot', 'grok', 'antigravity', 'zai']);
+  assert.deepEqual(unavailable.skipped.map((entry) => entry.id), ['opencode']);
 
   const available = await resolveProviderSupport(PROVIDERS, async () => ({ DatabaseSync() {} }));
   assert.deepEqual(available.supported, PROVIDERS);
@@ -72,6 +72,10 @@ test('parseArgs accepts provider positionals, dedupes, and combines with flags',
 test('parseArgs rejects unknown providers and unknown options', () => {
   assert.throws(() => parseArgs(['chatgpt']), /Unknown provider: chatgpt/);
   assert.throws(() => parseArgs(['--verbose']), /Unknown option: --verbose/);
+});
+
+test('agy selects Antigravity without creating a duplicate provider', () => {
+  assert.deepEqual(parseArgs(['agy', 'antigravity', '--read-only']).providers, ['antigravity']);
 });
 
 test('parseArgs recognizes help', () => {

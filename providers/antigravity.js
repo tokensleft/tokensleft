@@ -9,14 +9,18 @@ import { parseJson } from '../lib/http.js';
 import { isReloginRequired, oauthErrorCode, postTokenRefresh, ReloginRequiredError } from '../lib/oauth.js';
 import { createSingleAccountProvider, errorSnapshot } from '../lib/provider.js';
 import { googleAccountStatus, googleCreditItems, readGoogleOverageSettings } from '../lib/google-billing.js';
+import { readAntigravityCliCredential } from '../lib/antigravity-auth.js';
+import { ANTIGRAVITY_LOCAL_OPTS, createAntigravityUsageScanner } from '../lib/antigravity-local.js';
 
-const CLOUD_CODE_URLS = [
-  'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
-  'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+const CLOUD_CODE_BASES = [
+  'https://cloudcode-pa.googleapis.com/v1internal:',
+  'https://daily-cloudcode-pa.googleapis.com/v1internal:',
 ];
+const QUOTA_USER_AGENT = 'antigravity/cli/1.5.0';
 const TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
 // Antigravity's public "installed application" OAuth client (same values in
-// every install; used only to redeem the refresh token from its state DB).
+// every install; used only to redeem the refresh token from agy's keyring
+// or the IDE state DB).
 const OAUTH_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
 const OAUTH_CLIENT_SECRET = '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';
 const OAUTH_TOKEN_KEY = 'antigravityUnifiedStateSync.oauthToken';
@@ -320,66 +324,123 @@ export function buildAntigravityItems(data, { prefix = 'antigravity', now = Date
     }));
 }
 
-async function fetchAvailableModels(token) {
-  for (const url of CLOUD_CODE_URLS) {
-    let response;
+// Unlike fetchAvailableModels, this API reports every quota window, including
+// weekly limits shared by multiple models. Keep each server bucket separate.
+export function buildAntigravityQuotaItems(data, { prefix = 'antigravity', now = Date.now(), account = null } = {}) {
+  const items = [];
+  for (const group of Array.isArray(data?.groups) ? data.groups : []) {
+    if (!group || typeof group.displayName !== 'string' || !Array.isArray(group.buckets)) continue;
+    const name = group.displayName.trim();
+    if (!name || (account?.free && !/gemini/i.test(name))) continue;
+    const label = /^gemini models$/i.test(name) ? 'Gemini' : /claude.*gpt/i.test(name) ? 'Claude/GPT' : name;
+    const order = { '5h': 0, weekly: 1 };
+    const buckets = [...group.buckets].sort((a, b) => (order[a?.window] ?? 2) - (order[b?.window] ?? 2));
+    for (const bucket of buckets) {
+      if (!bucket || !Number.isFinite(bucket.remainingFraction) || typeof bucket.window !== 'string' || !bucket.window) continue;
+      const duration = bucket.window === '5h' ? QUOTA_PERIOD_MS : bucket.window === 'weekly' ? 7 * 24 * 60 * 60 * 1000 : null;
+      items.push(buildUsageItem({
+        key: `${prefix}:${bucket.bucketId || `${name}:${bucket.window}`}`,
+        label: `${label} ${bucket.window}`,
+        percent: (1 - Math.max(0, Math.min(1, bucket.remainingFraction))) * 100,
+        resetAt: toDate(bucket.resetTime),
+        periodMs: duration,
+        now,
+      }));
+    }
+  }
+  return items;
+}
+
+async function fetchAntigravityQuota(token) {
+  let failure = { data: null };
+  for (const base of CLOUD_CODE_BASES) {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'User-Agent': QUOTA_USER_AGENT };
 
     try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          'User-Agent': 'antigravity',
-        },
-        body: '{}',
+      const accountResponse = await fetch(`${base}loadCodeAssist`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
         signal: AbortSignal.timeout(15000),
       });
+      if (accountResponse.status === 401) return { authFailed: true };
+      if (!accountResponse.ok) {
+        failure = { data: null, status: accountResponse.status };
+        continue;
+      }
+      const accountData = parseJson(await accountResponse.text());
+      if (googleAccountStatus(accountData).blocked) return { data: {}, accountData };
+      const projectValue = accountData?.cloudaicompanionProject;
+      const project = typeof projectValue === 'string' ? projectValue : projectValue?.id;
+      if (!project || typeof project !== 'string') {
+        failure = { data: null, status: 'NOQUOTA', error: 'Google did not report a quota project for this account.' };
+        continue;
+      }
+      // Omitting the account's project makes this endpoint report a misleading
+      // enterprise-license error, even for a valid personal Ultra account.
+      const response = await fetch(`${base}retrieveUserQuotaSummary`, {
+        method: 'POST', headers, body: JSON.stringify({ project }), signal: AbortSignal.timeout(15000),
+      });
+      if (response.status === 401) return { authFailed: true };
+      if (response.ok) {
+        const data = parseJson(await response.text());
+        if (data && Array.isArray(data.groups)) return { data, accountData };
+        failure = { data: null, status: 'NOQUOTA', error: 'Google returned no quota summary for this account.' };
+      } else {
+        failure = { data: null, status: response.status };
+      }
     } catch {
       continue;
     }
-
-    if (response.status === 401 || response.status === 403) {
-      return { authFailed: true };
-    }
-
-    if (response.ok) {
-      return { data: parseJson(await response.text()) };
-    }
   }
 
-  return { data: null };
+  return failure;
 }
 
 // --- provider -----------------------------------------------------------------------
 
-export async function createAntigravityProvider(env) {
+export async function createAntigravityProvider(env, { readCliCredential = readAntigravityCliCredential } = {}) {
   const dbPath = antigravityStateDbPath(env);
-
-  if (!await access(dbPath).then(() => true, () => false)) {
+  const cliHome = env.ANTIGRAVITY_CLI_HOME || join(homedir(), '.gemini', 'antigravity-cli');
+  const authSource = env.ANTIGRAVITY_AUTH_SOURCE || (env.ANTIGRAVITY_STATE_DB ? 'ide' : 'auto');
+  if (!['auto', 'cli', 'ide'].includes(authSource)) {
+    throw new Error('ANTIGRAVITY_AUTH_SOURCE must be auto, cli, or ide.');
+  }
+  let useCli = authSource === 'cli';
+  if (authSource === 'auto' && await access(cliHome).then(() => true, () => false)) {
+    // A locked or inaccessible CLI keyring must surface as an error, rather
+    // than silently selecting an unrelated account in an old IDE database.
+    try { useCli = !!await readCliCredential(); } catch { useCli = true; }
+  }
+  if (!useCli && !await access(dbPath).then(() => true, () => false)) {
     return null;
   }
 
   const readOnly = readOnlyMode(env);
+  const scanner = useCli ? createAntigravityUsageScanner(cliHome) : null;
 
-  return createSingleAccountProvider({
+  const provider = createSingleAccountProvider({
     id: 'antigravity',
-    title: 'Antigravity',
+    title: useCli ? 'Antigravity CLI' : 'Antigravity',
     refreshMs: readRefreshMs(env, ['ANTIGRAVITY_REFRESH_SECONDS', 'ANTIGRAVITY_REFRESH_SEC'], DEFAULT_REFRESH_MS),
+    localOpts: ANTIGRAVITY_LOCAL_OPTS,
 
     async fetch() {
       const startedAt = Date.now();
       let tokens;
 
       try {
-        const value = await readStateDbValue(dbPath);
-        tokens = value ? unwrapOAuthEnvelope(value) : null;
+        if (useCli) {
+          tokens = await readCliCredential();
+        } else {
+          const value = await readStateDbValue(dbPath);
+          tokens = value ? unwrapOAuthEnvelope(value) : null;
+        }
       } catch (error) {
-        return errorSnapshot('DB', `cannot read Antigravity state: ${error.message}`, startedAt);
+        return errorSnapshot(useCli ? 'CRED' : 'DB', useCli ? error.message : `cannot read Antigravity state: ${error.message}`, startedAt);
       }
 
       if (!tokens) {
-        return errorSnapshot('CRED', 'No Antigravity OAuth state found. Start Antigravity and sign in first.', startedAt);
+        return errorSnapshot('CRED', useCli ? 'No agy CLI keyring session found. Run agy and sign in first.' : 'No Antigravity OAuth state found. Start Antigravity and sign in first.', startedAt);
       }
 
       const nowSec = Math.floor(Date.now() / 1000);
@@ -402,14 +463,12 @@ export async function createAntigravityProvider(env) {
 
       try {
         let result = { data: null };
-        let activeToken = null;
         let sawAuthFailure = false;
 
         for (const candidate of candidates) {
-          result = await fetchAvailableModels(candidate);
+          result = await fetchAntigravityQuota(candidate);
 
           if (result.data) {
-            activeToken = candidate;
             break;
           }
 
@@ -428,41 +487,35 @@ export async function createAntigravityProvider(env) {
           const refreshed = await refreshAccessToken(tokens.refreshToken, credentialHash);
 
           if (refreshed) {
-            activeToken = refreshed;
-            result = await fetchAvailableModels(refreshed);
+            result = await fetchAntigravityQuota(refreshed);
           }
         }
 
         if (!result.data) {
           return result.authFailed
             ? errorSnapshot(401, 'Antigravity session expired. Start Antigravity and sign in again.', startedAt)
-            : errorSnapshot('ERR', 'Cloud Code request failed. Try again later.', startedAt);
+            : errorSnapshot(result.status || 'ERR', result.error || 'Cloud Code quota request failed. Try again later.', startedAt);
         }
 
-        let accountData = null;
-        try {
-          const response = await fetch('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${activeToken}`, 'Content-Type': 'application/json', 'User-Agent': 'antigravity' },
-            body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
-            signal: AbortSignal.timeout(15000),
-          });
-          if (response.ok) accountData = parseJson(await response.text());
-        } catch { /* quota can still be reported when plan lookup is unavailable */ }
+        const accountData = result.accountData;
         const account = googleAccountStatus(accountData);
         if (account.blocked) return errorSnapshot('INELIGIBLE', `Antigravity access requires attention: ${account.reason}`, startedAt, { plan: account.plan });
-        const items = buildAntigravityItems(result.data, { account });
+        const items = buildAntigravityQuotaItems(result.data, { account });
 
         if (items.length === 0) {
           return errorSnapshot('NOQUOTA', `No eligible model quota reported for ${account.plan}.`, startedAt, { plan: account.plan });
         }
 
-        const settingsPath = env.ANTIGRAVITY_SETTINGS_PATH || join(dirname(dirname(dbPath)), 'settings.json');
-        const strategy = await readGoogleOverageSettings(settingsPath, { antigravity: true });
-        items.push(...googleCreditItems(accountData, { prefix: 'antigravity', strategy }));
-        if (!accountData) items.push({ kind: 'info', key: 'antigravity:access', label: 'Access', value: 'plan unavailable; model access not verified' });
-        if (account.free) items.push({ kind: 'info', key: 'antigravity:access', label: 'Access', value: 'Starter quota; paid model access not included' });
-        return { ok: true, ms: Date.now() - startedAt, plan: account.plan, items };
+        const settingsPath = env.ANTIGRAVITY_SETTINGS_PATH || (useCli ? join(cliHome, 'settings.json') : join(dirname(dirname(dbPath)), 'settings.json'));
+        let strategy = 'unknown';
+        if (useCli && !env.ANTIGRAVITY_SETTINGS_PATH) {
+          strategy = await readGoogleOverageSettings(join(dirname(cliHome), 'config', 'config.json'), { antigravity: true });
+        }
+        if (strategy === 'unknown') strategy = await readGoogleOverageSettings(settingsPath, { antigravity: true });
+        items.push(...googleCreditItems(accountData, { prefix: 'antigravity', strategy })
+          .filter((item) => !['unknown', 'unavailable'].includes(item.value)));
+        items.push({ kind: 'info', key: 'antigravity:credentials', label: 'Credentials', value: useCli ? 'agy CLI (system keyring)' : 'Antigravity IDE (state DB)', detailOnly: true });
+        return { ok: true, ms: Date.now() - startedAt, plan: account.plan, planId: account.id, planMultiplier: account.multiplier, items };
       } catch (error) {
         if (isReloginRequired(error)) {
           return errorSnapshot('EXPIRED', error.message, startedAt);
@@ -472,4 +525,12 @@ export async function createAntigravityProvider(env) {
       }
     },
   });
+  if (scanner) {
+    const fetchQuota = provider.fetch;
+    provider.fetch = async () => {
+      const [snapshot, local] = await Promise.all([fetchQuota(), scanner.scan()]);
+      return { ...snapshot, local };
+    };
+  }
+  return provider;
 }

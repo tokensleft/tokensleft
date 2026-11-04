@@ -110,10 +110,13 @@ test('demo fixtures follow current live provider shapes', async () => {
   assert.doesNotMatch(kimiCompact, /Shared quota|Parallel|Models|Local usage by model/);
   assert.match(kimiCompact, /Weekly limit[\s\S]*5h limit[\s\S]*Extra Usage/);
   assert.deepEqual(snapshots.antigravity.items.map((item) => [item.label, item.percent]), [
-    ['Gemini Pro', 0],
-    ['Gemini Flash', 0],
-    ['Claude', 0],
+    ['Gemini 5h', 0],
+    ['Gemini weekly', 0],
+    ['Claude/GPT 5h', 0],
+    ['Claude/GPT weekly', 0],
   ]);
+  assert.match(stripBlessedTags(providers.antigravity.render(snapshots.antigravity, 120, 'detail')), /Local usage by model[\s\S]*cached in/);
+  assert.doesNotMatch(providers.antigravity.render(snapshots.antigravity, 120, 'compact'), /Local usage by model/);
 
   assert.deepEqual(snapshots.copilot.items.map((item) => item.label), ['Premium']);
   assert.deepEqual(snapshots.zai.results.map((result) => result.account.name), ['Account 1', 'Account 2']);

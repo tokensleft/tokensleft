@@ -37,6 +37,20 @@ test('Google tier parsing distinguishes Starter, paid access, unavailable and bl
   assert.equal(googleAccountStatus(null).plan, 'Unknown plan');
 });
 
+test('Ultra multipliers follow the paid-tier ID, not the generic name or current free tier', () => {
+  for (const [id, multiplier] of [['g1-ultra-tier', 20], ['g1-ultra-lite-tier', 5]]) {
+    const account = googleAccountStatus({ currentTier: { id: 'free-tier' }, paidTier: { id, name: 'Google AI Ultra' } });
+    assert.equal(account.plan, `Google AI Ultra ${multiplier}x`);
+    assert.equal(account.multiplier, multiplier);
+    assert.equal(account.free, false);
+  }
+  for (const id of ['', 'g1-ultra-future-tier']) {
+    const account = googleAccountStatus({ paidTier: { id, name: 'Google AI Ultra' } });
+    assert.equal(account.plan, 'Google AI Ultra');
+    assert.equal(account.multiplier, null, 'unknown tier IDs must not acquire a guessed multiplier');
+  }
+});
+
 test('Antigravity Starter does not advertise paid model access or call GPT-OSS Claude', () => {
   const data = { models: {
     flash: { displayName: 'Gemini 3.8 Flash', quotaInfo: { remainingFraction: 1 } },
@@ -76,17 +90,19 @@ test('Antigravity fetch verifies the actual tier separately from the model catal
     assert.doesNotMatch(String(url), /generateContent|oauth2/);
     if (String(url).includes(':loadCodeAssist')) {
       assert.deepEqual(JSON.parse(options.body), { metadata: { ideType: 'ANTIGRAVITY' } });
-      return json(account);
+      return json({ cloudaicompanionProject: 'billing-project', ...account });
     }
-    return json({ models: {
-      flash: { displayName: 'Gemini Flash', quotaInfo: { remainingFraction: 1 } },
-      claude: { displayName: 'Claude Sonnet', quotaInfo: { remainingFraction: 1 } },
-    } });
+    assert.match(String(url), /:retrieveUserQuotaSummary$/);
+    assert.deepEqual(JSON.parse(options.body), { project: 'billing-project' });
+    return json({ groups: [
+      { displayName: 'Gemini Models', buckets: [{ bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 1 }] },
+      { displayName: 'Claude and GPT models', buckets: [{ bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1 }] },
+    ] });
   });
   const provider = await createAntigravityProvider({ ANTIGRAVITY_STATE_DB: dbPath, TOKENSLEFT_READ_ONLY: '1' });
   let snapshot = await provider.fetch();
   assert.equal(snapshot.plan, 'Free / Starter');
-  assert.ok(!snapshot.items.some((item) => item.label === 'Claude'));
+  assert.ok(!snapshot.items.some((item) => item.label.startsWith('Claude')));
   account = { ineligibleTiers: [{ reasonCode: 'VALIDATION_REQUIRED' }] };
   snapshot = await provider.fetch();
   assert.equal(snapshot.status, 'INELIGIBLE');
@@ -112,6 +128,10 @@ test('Google credit balances preserve unknown values and explicit zero, and read
   await writeFile(path, JSON.stringify({ billing: { overageStrategy: 'always' } }));
   assert.equal(await readGoogleOverageSettings(path), 'always');
   await writeFile(path, JSON.stringify({ useG1Credits: false }));
+  assert.equal(await readGoogleOverageSettings(path, { antigravity: true }), 'never');
+  await writeFile(path, JSON.stringify({ userSettings: { useAiCredits: true }, useG1Credits: false }));
+  assert.equal(await readGoogleOverageSettings(path, { antigravity: true }), 'always');
+  await writeFile(path, JSON.stringify({ userSettings: { useAiCredits: false } }));
   assert.equal(await readGoogleOverageSettings(path, { antigravity: true }), 'never');
 });
 

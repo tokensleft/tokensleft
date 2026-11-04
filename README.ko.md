@@ -14,7 +14,7 @@ AI 구독 한도, 재설정 시간, 사용 속도와 로컬 모델 사용량을 
 npx tokensleft
 ```
 
-로그인된 Claude Code, Codex, Gemini CLI, Kimi Code, GitHub Copilot, Grok, Antigravity, OpenCode, z.ai 계정을 자동으로 찾습니다. Node.js 20.18.1 이상이 필요합니다. Node 20처럼 `node:sqlite`를 사용할 수 없는 환경에서는 Antigravity와 OpenCode를 건너뜁니다.
+로그인된 Claude Code, Codex, Gemini CLI, Kimi Code, GitHub Copilot, Grok, Antigravity CLI (`agy`) / IDE, OpenCode, z.ai 계정을 자동으로 찾습니다. Node.js 20.18.1 이상이 필요합니다. OpenCode와 Antigravity IDE 데이터베이스에는 `node:sqlite` (Node.js 22.13+)가 필요하지만, agy CLI keyring 인증은 Node 20에서도 사용할 수 있습니다. `tokensleft agy`로 CLI 할당량을 확인하세요. 자세한 내용은 [English README](README.md)를 참고하세요.
 
 ## 명령어
 

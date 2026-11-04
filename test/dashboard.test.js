@@ -496,13 +496,68 @@ test('a provider whose fetch throws is reported as failed, and a failed history 
   await handle.ready;
 
   assert.match(fake.footer.plain(), /1 provider needs attention · Broken/);
-  assert.match(fake.dashboard.plain(), /broken failed: boom/);
+  assert.doesNotMatch(fake.dashboard.plain(), /Broken|broken failed: boom/);
 
   alpha.percent = 1;
   await handle.refresh();
   assert.equal(fake.celebration.hidden, false, 'the reset is still celebrated');
   fake.screen.program.emit('keypress', 'x', { name: 'x' });
   assert.match(fake.footer.plain(), /Reset detected, but its history could not be saved/);
+});
+
+test('visible providers use consecutive numbers and shortcuts as failures and recoveries change the order', async (t) => {
+  const alpha = fakeProvider('alpha', 'Alpha');
+  const beta = fakeProvider('beta', 'Beta');
+  const successfulFetch = alpha.fetch;
+  let unavailable = true;
+  alpha.fetch = async () => unavailable
+    ? { ok: false, status: 'ERR', error: 'server unavailable', items: [] }
+    : successfulFetch();
+  const { fake, handle } = startDashboard(t, { providers: [alpha, beta], width: 212 });
+  await handle.ready;
+
+  assert.doesNotMatch(fake.dashboard.plain(), /Alpha|server unavailable|│/);
+  assert.match(fake.dashboard.plain(), /\[1\] Beta/);
+  assert.doesNotMatch(fake.dashboard.plain(), /\[2\]/);
+  assert.match(fake.footer.plain().split('\n')[1], /1 provider/);
+  assert.doesNotMatch(fake.footer.plain(), /1-2 provider/);
+  assert.match(fake.footer.plain(), /1 provider needs attention · Alpha/);
+  fake.screen.press('d');
+  assert.doesNotMatch(fake.dashboard.plain(), /Alpha|server unavailable|│/);
+  assert.match(fake.dashboard.plain(), /beta-detail/);
+
+  unavailable = false;
+  fake.screen.press('1');
+  assert.equal(beta.fetches, 2, 'key 1 refreshes the currently visible Beta');
+  assert.equal(alpha.fetches, 0, 'hidden Alpha is retried through refresh-all or its timer');
+  await handle.refresh();
+  assert.match(fake.dashboard.plain(), /\[1\] Alpha/);
+  assert.match(fake.dashboard.plain(), /alpha-detail/);
+  assert.match(fake.footer.plain(), /2\/2 providers healthy/);
+  const betaFetches = beta.fetches;
+  fake.screen.press('1');
+  assert.equal(alpha.fetches, 2, 'after recovery key 1 follows Alpha at the top');
+  assert.equal(beta.fetches, betaFetches);
+  await handle.refresh();
+
+  unavailable = true;
+  await handle.refresh();
+  assert.doesNotMatch(fake.dashboard.plain(), /Alpha|alpha-detail|server unavailable/);
+  assert.match(fake.dashboard.plain(), /\[1\] Beta/);
+  assert.match(fake.footer.plain(), /1 provider needs attention · Alpha/);
+});
+
+test('all failed providers leave an empty body and remain counted in the footer', async (t) => {
+  const alpha = fakeProvider('alpha', 'Alpha');
+  const beta = fakeProvider('beta', 'Beta');
+  alpha.fetch = async () => ({ ok: false, error: 'unreachable', items: [] });
+  beta.fetch = async () => { throw new Error('offline'); };
+  const { fake, handle } = startDashboard(t, { providers: [alpha, beta], width: 212 });
+  await handle.ready;
+  assert.equal(fake.dashboard.plain().trim(), '');
+  assert.match(fake.footer.plain(), /2 providers need attention · Alpha, Beta/);
+  fake.screen.press('d');
+  assert.equal(fake.dashboard.plain().trim(), '');
 });
 
 test('NO_COLOR mode strips color tags from every surface', async (t) => {

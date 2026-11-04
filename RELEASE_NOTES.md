@@ -1,5 +1,5 @@
-<!-- release: v0.9.3 -->
+<!-- release: v0.9.4 -->
 
-- Updated Claude plan names, including Ultra for former Max 20x accounts.
-- Updated the demo for Ultra's weekly limits.
-- Renamed Extra usage to Usage credits.
+- Added agy CLI login detection, Ultra 5x/20x labels, and 5-hour/weekly quotas.
+- Added per-model agy usage details with token counts and cost estimates.
+- Fixed provider numbering and refresh shortcuts after hiding failed providers.

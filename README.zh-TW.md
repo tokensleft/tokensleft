@@ -14,7 +14,15 @@
 npx tokensleft
 ```
 
-TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity、OpenCode 與 z.ai。需要 Node.js 20.18.1 以上版本；在不支援 `node:sqlite` 的環境（包含 Node 20）會略過 Antigravity 與 OpenCode。
+TokensLeft 會自動偵測已登入的 Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity CLI（`agy`）／IDE、OpenCode 與 z.ai。需要 Node.js 20.18.1 以上版本；OpenCode 與 Antigravity IDE 資料庫需要 `node:sqlite`（Node.js 22.13 以上），agy CLI 的 keyring 登入也支援 Node 20。
+
+使用 `tokensleft agy`（`antigravity` 的別名）查詢 Antigravity CLI 配額。Google 已於 2026/6/18 將免費與 Google AI Pro／Ultra 的 Gemini CLI 使用者遷移至 agy；`gemini` 欄位仍保留舊版憑證與本地紀錄支援。參見[官方公告](https://github.com/google-gemini/gemini-cli/discussions/27274)。
+
+偵測到 `~/.gemini/antigravity-cli` 時，程式優先讀取 agy 的系統 keyring 登入（Windows Credential Manager／macOS Keychain／Linux Secret Service；Linux 需安裝 `secret-tool`），沒有 CLI 憑證才讀 IDE 資料庫。CLI keyring 讀取失敗時會顯示錯誤，避免誤用另一個 IDE 帳號。可用 `ANTIGRAVITY_AUTH_SOURCE=cli` 或 `ide` 指定來源；設定 `ANTIGRAVITY_STATE_DB` 預設選擇 IDE。詳細模式會標示憑證來源，更新的 access token 僅快取至 TokensLeft，不改寫 agy keyring；`--read-only` 禁止更新 token 或寫入快取。
+
+詳細模式也會顯示 agy 本地 SQLite 紀錄的各模型用量，包含今日／7 日／30 日／全部歷史的輸入、快取、輸出 token 與 API 費用估算（需 Node.js 22.13 以上）。本地紀錄涵蓋所有帳號，舊版加密 `.pb` 紀錄不計入；缺少價格時會標示未知，不套用其他模型版本的價格。
+
+agy 會依登入帳號的 project 查詢完整配額摘要，分別顯示各模型群組的 5 小時與 weekly 用量及重設時間；百分比代表已使用量。沒有資料的 credits／overage 列會隱藏；CLI 的 overage 設定也會讀取共用的 `~/.gemini/config/config.json`。
 
 ## 指令
 

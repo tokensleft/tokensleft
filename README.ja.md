@@ -14,7 +14,7 @@ AI サブスクリプションの上限、リセット時刻、消費ペース�
 npx tokensleft
 ```
 
-ログイン済みの Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity、OpenCode、z.ai を自動検出します。Node.js 20.18.1 以降が必要です。Node 20 など `node:sqlite` を利用できない環境では、Antigravity と OpenCode はスキップされます。
+ログイン済みの Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity CLI (`agy`) / IDE、OpenCode、z.ai を自動検出します。Node.js 20.18.1 以降が必要です。OpenCode と Antigravity IDE のデータベースには `node:sqlite` (Node.js 22.13+) が必要ですが、agy CLI の keyring 認証は Node 20 でも利用できます。`tokensleft agy` で CLI のクォータを確認できます。詳細は [English README](README.md) を参照してください。
 
 ## コマンド
 

@@ -14,7 +14,7 @@
 npx tokensleft
 ```
 
-TokensLeft 会自动检测已登录的 Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity、OpenCode 和 z.ai。需要 Node.js 20.18.1 或更高版本；在不支持 `node:sqlite` 的环境（包括 Node 20）会跳过 Antigravity 和 OpenCode。
+TokensLeft 会自动检测已登录的 Claude Code、Codex、Gemini CLI、Kimi Code、GitHub Copilot、Grok、Antigravity CLI（`agy`）／IDE、OpenCode 和 z.ai。需要 Node.js 20.18.1 或更高版本；OpenCode 和 Antigravity IDE 数据库需要 `node:sqlite`（Node.js 22.13+），agy CLI 的 keyring 登录也支持 Node 20。使用 `tokensleft agy` 查询 CLI 配额；详见 [English README](README.md)。
 
 ## 命令
 
