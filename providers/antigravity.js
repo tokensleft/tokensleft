@@ -407,13 +407,21 @@ async function fetchAntigravityQuota(token, bases) {
 
 export async function createAntigravityProvider(env, { readCliCredential = readAntigravityCliCredential } = {}) {
   const dbPath = antigravityStateDbPath(env);
-  const cliHome = env.ANTIGRAVITY_CLI_HOME || join(homedir(), '.gemini', 'antigravity-cli');
+  const defaultCliHome = join(homedir(), '.gemini', 'antigravity-cli');
+  const candidateHomes = env.ANTIGRAVITY_CLI_HOME
+    ? [env.ANTIGRAVITY_CLI_HOME]
+    : [defaultCliHome, join(homedir(), '.gemini', 'antigravity')];
+  const existingHomes = (await Promise.all(
+    candidateHomes.map(async (dir) => await access(dir).then(() => dir, () => null)),
+  )).filter(Boolean);
+  const cliHome = existingHomes[0] || candidateHomes[0];
+  const isDesktopHome = !env.ANTIGRAVITY_CLI_HOME && existingHomes.length > 0 && !existingHomes.includes(defaultCliHome);
   const authSource = env.ANTIGRAVITY_AUTH_SOURCE || (env.ANTIGRAVITY_STATE_DB ? 'ide' : 'auto');
   if (!['auto', 'cli', 'ide'].includes(authSource)) {
     throw new Error('ANTIGRAVITY_AUTH_SOURCE must be auto, cli, or ide.');
   }
   let useCli = authSource === 'cli';
-  if (authSource === 'auto' && await access(cliHome).then(() => true, () => false)) {
+  if (authSource === 'auto' && existingHomes.length > 0) {
     // A locked or inaccessible CLI keyring must surface as an error, rather
     // than silently selecting an unrelated account in an old IDE database.
     try { useCli = !!await readCliCredential(); } catch { useCli = true; }
@@ -425,11 +433,11 @@ export async function createAntigravityProvider(env, { readCliCredential = readA
   const readOnly = readOnlyMode(env);
   // The same CLI account can have different allowances on the two hosts.
   const quotaBases = useCli ? [AGY_CLI_BASE] : IDE_BASES;
-  const scanner = useCli ? createAntigravityUsageScanner(cliHome) : null;
+  const scanner = useCli ? createAntigravityUsageScanner(existingHomes.length > 0 ? existingHomes : [cliHome]) : null;
 
   const provider = createSingleAccountProvider({
     id: 'antigravity',
-    title: useCli ? 'Antigravity CLI' : 'Antigravity',
+    title: useCli && !isDesktopHome ? 'Antigravity CLI' : 'Antigravity',
     refreshMs: readRefreshMs(env, ['ANTIGRAVITY_REFRESH_SECONDS', 'ANTIGRAVITY_REFRESH_SEC'], DEFAULT_REFRESH_MS),
     localOpts: ANTIGRAVITY_LOCAL_OPTS,
 
@@ -523,7 +531,7 @@ export async function createAntigravityProvider(env, { readCliCredential = readA
         if (strategy === 'unknown') strategy = await readGoogleOverageSettings(settingsPath, { antigravity: true });
         items.push(...googleCreditItems(accountData, { prefix: 'antigravity', strategy })
           .filter((item) => !['unknown', 'unavailable'].includes(item.value)));
-        items.push({ kind: 'info', key: 'antigravity:credentials', label: 'Credentials', value: useCli ? 'agy CLI (system keyring)' : 'Antigravity IDE (state DB)', detailOnly: true });
+        items.push({ kind: 'info', key: 'antigravity:credentials', label: 'Credentials', value: useCli ? (isDesktopHome ? 'Antigravity (system keyring)' : 'agy CLI (system keyring)') : 'Antigravity IDE (state DB)', detailOnly: true });
         return { ok: true, ms: Date.now() - startedAt, plan: account.plan, planId: account.id, planMultiplier: account.multiplier, items };
       } catch (error) {
         if (isReloginRequired(error)) {

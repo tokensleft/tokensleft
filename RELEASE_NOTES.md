@@ -1,5 +1,4 @@
-<!-- release: v0.9.5 -->
+<!-- release: v0.9.6 -->
 
-- Fixed Antigravity CLI quota reporting to match agy /usage. Each window shows the percentage remaining, and a depleted weekly allowance marks the five-hour window as unavailable.
-- Kept providers visible when at least one account has usable data, so a failed z.ai account no longer hides healthy accounts.
-- Reported z.ai application errors in the dashboard and JSON output, with credentials redacted from error messages. Local fetch diagnostics are capped at 2 MiB.
+- TokensLeft now checks both the agy CLI and Antigravity Desktop data directories for local token usage when using a system-keyring login. Set `ANTIGRAVITY_CLI_HOME` to scan a single directory.
+- When only the default desktop directory is present, TokensLeft checks the existing system-keyring login for live quota and labels the provider “Antigravity”.
