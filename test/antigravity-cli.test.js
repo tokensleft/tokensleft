@@ -75,6 +75,7 @@ test('auto detection prefers agy keyring without an IDE DB and rereads account c
   const seen = [];
   mockFetch(t, async (url, options) => {
     seen.push(options.headers.Authorization);
+    assert.equal(new URL(url).hostname, 'daily-cloudcode-pa.googleapis.com');
     assert.doesNotMatch(String(url), /oauth2|generateContent/);
     assert.match(options.headers['User-Agent'], /^antigravity\/cli\//);
     if (String(url).includes(':loadCodeAssist')) return json({ cloudaicompanionProject: 'test-cli-project', paidTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } });
@@ -127,6 +128,7 @@ test('quota API failures stay failures and never fall back to incomplete model c
   const snapshot = await provider.fetch();
   assert.equal(snapshot.ok, false);
   assert.equal(snapshot.status, 503);
+  assert.ok(calls.every((url) => new URL(url).hostname === 'daily-cloudcode-pa.googleapis.com'));
   assert.deepEqual(snapshot.items, []);
   assert.ok(calls.every((url) => !url.includes('fetchAvailableModels') && !url.includes('oauth2')));
 });

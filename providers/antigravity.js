@@ -12,9 +12,10 @@ import { googleAccountStatus, googleCreditItems, readGoogleOverageSettings } fro
 import { readAntigravityCliCredential } from '../lib/antigravity-auth.js';
 import { ANTIGRAVITY_LOCAL_OPTS, createAntigravityUsageScanner } from '../lib/antigravity-local.js';
 
-const CLOUD_CODE_BASES = [
+const AGY_CLI_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal:';
+const IDE_BASES = [
   'https://cloudcode-pa.googleapis.com/v1internal:',
-  'https://daily-cloudcode-pa.googleapis.com/v1internal:',
+  AGY_CLI_BASE,
 ];
 const QUOTA_USER_AGENT = 'antigravity/cli/1.5.0';
 const TOKEN_REFRESH_URL = 'https://oauth2.googleapis.com/token';
@@ -335,12 +336,18 @@ export function buildAntigravityQuotaItems(data, { prefix = 'antigravity', now =
     const label = /^gemini models$/i.test(name) ? 'Gemini' : /claude.*gpt/i.test(name) ? 'Claude/GPT' : name;
     const order = { '5h': 0, weekly: 1 };
     const buckets = [...group.buckets].sort((a, b) => (order[a?.window] ?? 2) - (order[b?.window] ?? 2));
+    const weeklyExhausted = buckets.some((bucket) => bucket?.window === 'weekly' && bucket.remainingFraction === 0);
     for (const bucket of buckets) {
+      if (weeklyExhausted && bucket?.window === '5h') {
+        items.push({ kind: 'info', key: `${prefix}:${bucket.bucketId || `${name}:5h`}`, label: `${label} 5h`, value: 'N/A (weekly limit reached)' });
+        continue;
+      }
       if (!bucket || !Number.isFinite(bucket.remainingFraction) || typeof bucket.window !== 'string' || !bucket.window) continue;
       const duration = bucket.window === '5h' ? QUOTA_PERIOD_MS : bucket.window === 'weekly' ? 7 * 24 * 60 * 60 * 1000 : null;
       items.push(buildUsageItem({
         key: `${prefix}:${bucket.bucketId || `${name}:${bucket.window}`}`,
         label: `${label} ${bucket.window}`,
+        value: `${(Math.max(0, Math.min(1, bucket.remainingFraction)) * 100).toFixed(2)}% remaining`,
         percent: (1 - Math.max(0, Math.min(1, bucket.remainingFraction))) * 100,
         resetAt: toDate(bucket.resetTime),
         periodMs: duration,
@@ -351,9 +358,9 @@ export function buildAntigravityQuotaItems(data, { prefix = 'antigravity', now =
   return items;
 }
 
-async function fetchAntigravityQuota(token) {
+async function fetchAntigravityQuota(token, bases) {
   let failure = { data: null };
-  for (const base of CLOUD_CODE_BASES) {
+  for (const base of bases) {
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'User-Agent': QUOTA_USER_AGENT };
 
     try {
@@ -416,6 +423,8 @@ export async function createAntigravityProvider(env, { readCliCredential = readA
   }
 
   const readOnly = readOnlyMode(env);
+  // The same CLI account can have different allowances on the two hosts.
+  const quotaBases = useCli ? [AGY_CLI_BASE] : IDE_BASES;
   const scanner = useCli ? createAntigravityUsageScanner(cliHome) : null;
 
   const provider = createSingleAccountProvider({
@@ -466,7 +475,7 @@ export async function createAntigravityProvider(env, { readCliCredential = readA
         let sawAuthFailure = false;
 
         for (const candidate of candidates) {
-          result = await fetchAntigravityQuota(candidate);
+          result = await fetchAntigravityQuota(candidate, quotaBases);
 
           if (result.data) {
             break;
@@ -487,7 +496,7 @@ export async function createAntigravityProvider(env, { readCliCredential = readA
           const refreshed = await refreshAccessToken(tokens.refreshToken, credentialHash);
 
           if (refreshed) {
-            result = await fetchAntigravityQuota(refreshed);
+            result = await fetchAntigravityQuota(refreshed, quotaBases);
           }
         }
 

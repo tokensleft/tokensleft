@@ -186,12 +186,67 @@ function countItem(label, key, limit, periodMs, now) {
   });
 }
 
-async function fetchAccountUsage(account) {
+const LOG_LIMIT = 2 * 1024 * 1024;
+let pendingLogWrite = Promise.resolve();
+
+function writeDiagnostic(record) {
+  if (process.env.NODE_TEST_CONTEXT) return;
+  pendingLogWrite = pendingLogWrite.then(async () => {
+    const path = configPath('zai-fetch.log');
+    const line = JSON.stringify(record) + '\n';
+    await mkdir(dirname(path), { recursive: true });
+    const file = await open(path, 'a', 0o600);
+    try {
+      if ((await file.stat()).size + Buffer.byteLength(line) > LOG_LIMIT) await file.truncate(0);
+      await file.appendFile(line);
+    } finally {
+      await file.close();
+    }
+  }).catch(() => { /* Diagnostics must not interrupt quota refreshes. */ });
+  return pendingLogWrite;
+}
+
+async function fetchZaiResult(url, options) {
   const startedAt = Date.now();
-  const options = { key: account.key, proxy: account.proxy };
+  const result = await fetchJsonResult(url, options);
+  // Log only diagnostics, never request headers, keys or raw response bodies.
+  const redact = (value) => {
+    let text = String(value || '');
+    for (const secret of [options.key, options.proxy].filter(Boolean)) {
+      text = text.split(secret).join('[redacted]');
+    }
+    return text.slice(0, 500);
+  };
+  await writeDiagnostic({
+      timestamp: new Date(startedAt).toISOString(),
+      endpoint: new URL(url).pathname,
+      account: options.accountIndex,
+      viaProxy: !!options.proxy,
+      durationMs: Date.now() - startedAt,
+      transportOk: result.ok,
+      ok: result.ok && result.data?.success !== false,
+      status: result.ok ? result.data?.code ?? 'OK' : result.status,
+      error: redact(result.ok && result.data?.success === false
+        ? result.data.msg || result.data.message : result.error),
+      limitCount: Array.isArray(result.data?.data?.limits) ? result.data.data.limits.length : null,
+  });
+  if (result.ok && result.data?.success === false) {
+    return {
+      ok: false,
+      status: result.data.code || 'ERR',
+      error: redact(result.data.msg || result.data.message || 'z.ai request failed'),
+      url,
+    };
+  }
+  return result;
+}
+
+async function fetchAccountUsage(account, accountIndex) {
+  const startedAt = Date.now();
+  const options = { key: account.key, proxy: account.proxy, accountIndex };
   const [subscription, quota] = await Promise.all([
-    fetchJsonResult(SUBSCRIPTION_URL, options),
-    fetchJsonResult(QUOTA_URL, options),
+    fetchZaiResult(SUBSCRIPTION_URL, options),
+    fetchZaiResult(QUOTA_URL, options),
   ]);
   // Quota is the provider's primary payload. A working subscription endpoint
   // must not make a failed quota request look healthy; subscription metadata
@@ -331,7 +386,7 @@ export async function createZaiProvider(env) {
     async fetch() {
       const [local, results] = await Promise.all([
         scanner.scan().catch((error) => ({ ok: false, error: error.message, models: [] })),
-        Promise.all(accounts.map((account) => fetchAccountUsage(account))),
+        Promise.all(accounts.map((account, index) => fetchAccountUsage(account, index + 1))),
       ]);
       return { results, local };
     },
@@ -351,3 +406,6 @@ export async function createZaiProvider(env) {
     },
   };
 }
+import { open, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { configPath } from '../lib/fsx.js';

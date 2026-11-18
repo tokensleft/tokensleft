@@ -36,7 +36,16 @@ import {
   uiColorMode,
   visibleCellWidth,
   providerBlocksFitColumn,
+  providerIsVisible,
 } from '../lib/tui.js';
+
+test('partially successful accounts stay visible while failed providers remain hidden', () => {
+  const provider = { headerStatus: () => ({ ok: false }) };
+  assert.equal(providerIsVisible({ provider, snapshot: { results: [{ ok: false }, { ok: true }] } }), true);
+  assert.equal(providerIsVisible({ provider, snapshot: { results: [{ ok: false }] } }), false);
+  assert.equal(providerIsVisible({ provider, snapshot: { fatal: 'failed' } }), false);
+  assert.equal(providerIsVisible({ provider, snapshot: null }), true);
+});
 
 test('terminalProfile defaults every detected terminal to the 256-color profile', () => {
   assert.equal(DEFAULT_TERMINAL_PROFILE, 'xterm-256color');

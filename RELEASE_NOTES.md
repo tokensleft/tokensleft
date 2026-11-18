@@ -1,5 +1,5 @@
-<!-- release: v0.9.4 -->
+<!-- release: v0.9.5 -->
 
-- Added agy CLI login detection, Ultra 5x/20x labels, and 5-hour/weekly quotas.
-- Added per-model agy usage details with token counts and cost estimates.
-- Fixed provider numbering and refresh shortcuts after hiding failed providers.
+- Fixed Antigravity CLI quota reporting to match agy /usage. Each window shows the percentage remaining, and a depleted weekly allowance marks the five-hour window as unavailable.
+- Kept providers visible when at least one account has usable data, so a failed z.ai account no longer hides healthy accounts.
+- Reported z.ai application errors in the dashboard and JSON output, with credentials redacted from error messages. Local fetch diagnostics are capped at 2 MiB.

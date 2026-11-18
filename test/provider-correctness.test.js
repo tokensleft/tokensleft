@@ -84,6 +84,19 @@ test('z.ai treats quota as required and removes proxy userinfo from snapshots', 
   });
 });
 
+test('z.ai reports API failures even when HTTP succeeds', async () => {
+  await withMockFetch(() => jsonResponse({ success: false, code: 500, msg: 'No Coding Plan: test-key' }), async () => {
+    const provider = await createZaiProvider({ ZAI_API_KEY: 'test-key', ZAI_AUTO_DISCOVER: '0' });
+    const snapshot = await provider.fetch();
+    const result = snapshot.results[0];
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 500);
+    assert.equal(result.error, 'No Coding Plan: [redacted]');
+    assert.deepEqual(result.items, []);
+    assert.match(provider.render(snapshot, 100), /No Coding Plan/);
+  });
+});
+
 test('z.ai keeps healthy quota data when subscription metadata is partial', async () => {
   await withMockFetch((url) => String(url).includes('/subscription/')
     ? jsonResponse({ error: 'subscription unavailable' }, 503)
